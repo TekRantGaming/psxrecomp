@@ -137,6 +137,17 @@ static uint8_t pad_supports_config[PSX_MAX_PLAYERS] = {
     PSX_PAD_INIT(1)
 };
 
+/* Namco GunCon (NPC-103) per logical pad (psx-spx "Controllers - Lightguns -
+ * Namco (GunCon)"). It answers only the 0x42 read with id 0x63 and the frame
+ *   63 5A btnLo btnHi xLo xHi yLo yHi
+ * where X counts 8 MHz clocks since HSYNC and Y is the scanline the gun saw
+ * the beam on; (0x0001, 0x000A) means "no light seen" (off-screen). The gun
+ * latches its own beam position, so unlike the Konami Justifier it needs no
+ * GPU light-pen IRQ. Config commands get the digital-pad hi-z treatment. */
+static PSX_BSS uint8_t pad_guncon[PSX_MAX_PLAYERS];
+static uint16_t guncon_x[PSX_MAX_PLAYERS] = { PSX_PAD_INIT(0x0001) };
+static uint16_t guncon_y[PSX_MAX_PLAYERS] = { PSX_PAD_INIT(0x000A) };
+
 /* Coherent-DualShock model (Tomba phantom-input fix). A real controller never
  * changes its reported type (0x41 digital <-> 0x73 analog) in the middle of a
  * transaction, nor while the host is mid config-handshake: the type only flips
@@ -985,6 +996,9 @@ void sio_netplay_canonicalize_session_pads(int slot_count)
 
 void sio_set_pad_connected(int slot, int connected) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    /* A GunCon is plugged into its port no matter which host pad device is
+     * (or isn't) assigned to that seat. */
+    if (pad_guncon[slot]) connected = 1;
     if (connected) {
         pad_connected |= (uint8_t)(1u << slot);
     } else {
@@ -992,6 +1006,28 @@ void sio_set_pad_connected(int slot, int connected) {
         pad_rumble_small[slot] = 0;
         pad_rumble_large[slot] = 0;
     }
+}
+
+void sio_set_guncon(int slot, int enabled) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    pad_guncon[slot] = enabled ? 1 : 0;
+    if (enabled) {
+        pad_connected |= (uint8_t)(1u << slot);
+        pad_in_config[slot] = 0;
+        pad_rumble_small[slot] = 0;
+        pad_rumble_large[slot] = 0;
+    }
+}
+
+int sio_get_guncon(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return 0;
+    return pad_guncon[slot];
+}
+
+void sio_set_guncon_position(int slot, uint16_t x, uint16_t y) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    guncon_x[slot] = x;
+    guncon_y[slot] = y;
 }
 
 void sio_set_pad_config_capable(int slot, int capable) {
@@ -1253,7 +1289,30 @@ static void pad_process_byte(uint8_t tx_byte) {
          * digital-only and just polls. Gate all config branches on this so a
          * digital-mode pad behaves like real hardware (see pad_supports_config). */
         const int ds = pad_supports_config[lp];
-        if (tx_byte == 0x42) {
+        if (pad_guncon[lp]) {
+            if (tx_byte != 0x42) {
+                /* GunCon has no config mode: hi-z, end transaction. */
+                pad_state = PAD_IDLE;
+                pad_response_len = 0;
+                pad_response_idx = 0;
+                pad_current_cmd = 0;
+                sio_rx_data = 0xFF;
+                break;
+            }
+            const uint16_t btn = pad_buttons[lp];
+            pad_response[0] = 0x63;
+            pad_response[1] = 0x5A;
+            pad_response[2] = (uint8_t)(btn & 0xFF);
+            pad_response[3] = (uint8_t)(btn >> 8);
+            pad_response[4] = (uint8_t)(guncon_x[lp] & 0xFF);
+            pad_response[5] = (uint8_t)(guncon_x[lp] >> 8);
+            pad_response[6] = (uint8_t)(guncon_y[lp] & 0xFF);
+            pad_response[7] = (uint8_t)(guncon_y[lp] >> 8);
+            pad_response_len = 8;
+            pad_state = PAD_SEND_RESPONSE;
+            sio_rx_data = pad_response[0];
+            sio_stat |= SIO_STAT_ACK;
+        } else if (tx_byte == 0x42) {
             /* Read poll. Analog (or in-config) uses the 8-byte format with the
              * four stick axes; a plain digital pad uses the 4-byte format. */
             const uint16_t btn = pad_buttons[lp];

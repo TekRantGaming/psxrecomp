@@ -681,6 +681,13 @@ struct RuntimeConfig {
     // segment but keeps the device dropdown). Default false.
     bool                  controller_lock_device = false;
 
+    // guncon_ports: console ports (1 and/or 2) that carry a Namco GunCon
+    // (NPC-103, poll id 0x63) instead of a pad. The host mouse aims it: the
+    // cursor's position inside the presented display becomes the beam X/Y the
+    // gun reports, left button = trigger, right = A, middle = B; a cursor
+    // outside the picture reads as an off-screen shot. Empty = no light gun.
+    std::vector<int>      guncon_ports;
+
     // deadzone: default analog-stick deadzone in raw SDL axis units (0..32767).
     // Applied both to the stick->d-pad press threshold and the analog-axis centre
     // dead-band. Absent => runtime default (12000). Overridden per-install by

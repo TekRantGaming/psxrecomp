@@ -62,6 +62,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #endif
 #include "psx_netplay.h"
 #include "psx_stick.h"       /* radial SDL-stick -> DualShock response transform */
+#include "psx_guncon.h"      /* Namco GunCon: mouse -> beam position */
 #include "psx_netplay_rb.h"
 #include "psx_selfcheck.h"
 #include "psx_lobby_client.h"
@@ -6227,6 +6228,154 @@ done:
     freeze_heartbeat_set_paused(0);
 }
 
+/* GunCon seat ([controller] guncon_ports). Two ways to aim, switching to
+ * whichever was used last:
+ *
+ *  Mouse (P1 only): cursor inside the presented picture = beam position;
+ *  outside it = no light (an off-screen shot). Left = trigger, Right = A,
+ *  Middle = B, X1 (back side button) = trigger aimed off-screen.
+ *
+ *  Gamepad (Xbox layout): either stick moves an on-screen sight (left stick
+ *  fast, right stick slow for fine aim). RT / A / RB = trigger, LT / B =
+ *  trigger aimed off-screen, Start / X = GunCon A, Back / Y = GunCon B.
+ *  A seat with an assigned controller uses it; otherwise the Nth connected
+ *  controller not claimed by another seat drives gun N. */
+struct GunAim {
+    float u = 0.5f, v = 0.5f;   /* stick-driven sight, normalized display */
+    int   src = 0;              /* 0 = none yet, 1 = mouse, 2 = gamepad */
+    float last_mx = -1.f, last_my = -1.f;
+    Uint32 last_ms = 0;
+};
+static GunAim g_gun_aim[PSX_MAX_PLAYERS];
+/* Ports game.toml declares as GunCon ports. Port 1's gun is always plugged
+ * in (the mouse can drive it); a later port's gun is plugged in only while a
+ * gamepad is available for it. A gun with nothing behind it would make the
+ * game wait forever on that port's calibration screen. */
+static int g_guncon_cfg[PSX_MAX_PLAYERS];
+
+static SDL_GameController* gun_controller_for(int s) {
+    if (g_players[s].kind == 2 && g_players[s].handle)
+        return g_players[s].handle;
+    int want = 0;   /* unassigned gun seats before this one */
+    for (int k = 0; k < s; k++)
+        if (g_guncon_cfg[k] && !(g_players[k].kind == 2 && g_players[k].handle))
+            want++;
+    const int n = SDL_NumJoysticks();
+    for (int i = 0; i < n; i++) {
+        if (!SDL_IsGameController(i)) continue;
+        SDL_JoystickID inst = SDL_JoystickGetDeviceInstanceID(i);
+        bool claimed = false;
+        for (int k = 0; k < PSX_MAX_PLAYERS; k++)
+            if (g_players[k].kind == 2 && g_players[k].handle &&
+                g_players[k].instance == inst)
+                claimed = true;
+        if (claimed) continue;
+        if (want-- > 0) continue;
+        SDL_GameController* h = SDL_GameControllerFromInstanceID(inst);
+        if (!h) h = SDL_GameControllerOpen(i);   /* open once; SDL keeps it */
+        return h;
+    }
+    return nullptr;
+}
+
+/* One stick's contribution to sight velocity (screen-heights per second). */
+static void gun_stick_velocity(SDL_GameController* h, SDL_GameControllerAxis ax,
+                               SDL_GameControllerAxis ay, float speed,
+                               float* vx, float* vy) {
+    const float x = (float)SDL_GameControllerGetAxis(h, ax) / 32767.f;
+    const float y = (float)SDL_GameControllerGetAxis(h, ay) / 32767.f;
+    const float m = sqrtf(x * x + y * y);
+    const float dead = 0.15f;
+    if (m <= dead) return;
+    float k = (m - dead) / (1.f - dead);
+    if (k > 1.f) k = 1.f;
+    const float scale = k * k * speed / m;   /* quadratic: precise near centre */
+    *vx += x * scale;
+    *vy += y * scale;
+}
+
+static void sample_guncon_into_sio(int s) {
+    GunAim& a = g_gun_aim[s];
+    const bool guard = savestate_input_guard_active();
+    const Uint32 now = (Uint32)SDL_GetTicks();
+    float dt = a.last_ms ? (float)(now - a.last_ms) / 1000.f : 0.f;
+    if (dt > 0.05f) dt = 0.05f;
+    a.last_ms = now;
+
+    uint16_t pressed = 0;
+    int force_offscreen = 0;
+
+    /* Mouse: P1 only. Any cursor motion hands aiming back to the mouse. */
+    float mu = 0.f, mv = 0.f;
+    int mouse_on = 0;
+    if (s == 0) {
+#if defined(PSX_SDL3)
+        float mx = 0.f, my = 0.f;
+#else
+        int mx = 0, my = 0;
+#endif
+        const Uint32 mb = SDL_GetMouseState(&mx, &my);
+        mouse_on = gl_renderer_window_to_display_uv((float)mx, (float)my, &mu, &mv) == 1;
+        if (a.last_mx >= 0.f && ((float)mx != a.last_mx || (float)my != a.last_my))
+            a.src = 1;
+        a.last_mx = (float)mx; a.last_my = (float)my;
+        if (mb & (SDL_BUTTON(SDL_BUTTON_LEFT) | SDL_BUTTON(SDL_BUTTON_RIGHT) |
+                  SDL_BUTTON(SDL_BUTTON_MIDDLE) | SDL_BUTTON(SDL_BUTTON_X1)))
+            a.src = (a.src == 0) ? 1 : a.src;
+        if (mb & SDL_BUTTON(SDL_BUTTON_LEFT))   pressed |= PSX_GUNCON_TRIGGER;
+        if (mb & SDL_BUTTON(SDL_BUTTON_RIGHT))  pressed |= PSX_GUNCON_A;
+        if (mb & SDL_BUTTON(SDL_BUTTON_MIDDLE)) pressed |= PSX_GUNCON_B;
+        if (mb & SDL_BUTTON(SDL_BUTTON_X1)) {
+            pressed |= PSX_GUNCON_TRIGGER;
+            force_offscreen = 1;
+        }
+    }
+
+    /* Gamepad. */
+    SDL_GameController* h = gun_controller_for(s);
+    if (h) {
+        float vx = 0.f, vy = 0.f;
+        gun_stick_velocity(h, SDL_CONTROLLER_AXIS_LEFTX, SDL_CONTROLLER_AXIS_LEFTY,
+                           1.4f, &vx, &vy);
+        gun_stick_velocity(h, SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_RIGHTY,
+                           0.45f, &vx, &vy);
+        if (vx != 0.f || vy != 0.f) {
+            if (a.src != 2) {   /* take over from where the mouse was aiming */
+                if (a.src == 1 && mouse_on) { a.u = mu; a.v = mv; }
+                a.src = 2;
+            }
+            a.u += vx * dt * 0.75f;   /* 4:3 picture: same speed in pixels */
+            a.v += vy * dt;
+            if (a.u < 0.f) a.u = 0.f;
+            if (a.u > 0.999f) a.u = 0.999f;
+            if (a.v < 0.f) a.v = 0.f;
+            if (a.v > 0.999f) a.v = 0.999f;
+        }
+        const int trig_r = SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000;
+        const int trig_l = SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000;
+        const int btn_a  = SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_A);
+        const int btn_b  = SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_B);
+        const int btn_x  = SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_X);
+        const int btn_y  = SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_Y);
+        const int btn_rb = SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+        const int btn_st = SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_START);
+        const int btn_bk = SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_BACK);
+        if (trig_r || btn_a || btn_rb) pressed |= PSX_GUNCON_TRIGGER;
+        if (trig_l || btn_b) { pressed |= PSX_GUNCON_TRIGGER; force_offscreen = 1; }
+        if (btn_st || btn_x) pressed |= PSX_GUNCON_A;
+        if (btn_bk || btn_y) pressed |= PSX_GUNCON_B;
+        if (pressed && a.src == 0) a.src = 2;
+    }
+
+    float u = 0.f, v = 0.f;
+    int on_screen = 0;
+    if (a.src == 2)      { u = a.u; v = a.v; on_screen = 1; }
+    else if (s == 0)     { u = mu; v = mv; on_screen = mouse_on; }
+    if (force_offscreen) on_screen = 0;
+    psx_guncon_set_reticle(s, a.src == 2, a.u, a.v);
+    psx_guncon_apply(s, on_screen, u, v, guard ? 0 : pressed);
+}
+
 static void sample_pad_into_sio(int override) {
     /* Selfcheck fighter mash owns P1 when enabled (headless-safe). */
     if (override < 0) {
@@ -6243,7 +6392,18 @@ static void sample_pad_into_sio(int override) {
     if (n > PSX_MAX_PLAYERS) n = PSX_MAX_PLAYERS;
     const uint32_t consumer_sim =
         psx_start_consumer_enabled() ? psx_start_consumer_offline_frame() : 0u;
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        if (!g_guncon_cfg[s]) continue;
+        const int plugged = (s == 0) || gun_controller_for(s) != nullptr;
+        if (plugged != sio_get_guncon(s)) {
+            sio_set_guncon(s, plugged);
+            if (!plugged) sio_set_pad_connected(s, g_players[s].kind != 0 ? 1 : 0);
+        }
+        if (plugged)
+            sample_guncon_into_sio(s);
+    }
     for (int s = 0; s < n; s++) {
+        if (sio_get_guncon(s)) continue;           /* gun sampled above */
         PsxNetPad pad;
         if (!capture_pad_slot(s, &pad)) continue;  /* no device in this port */
         /* Push sticks every frame; request the pad type (digital/analog) through
@@ -14078,6 +14238,18 @@ int main(int argc, char** argv) {
                 ctrl_locked_mode[i] = player_mode[i];
             ctrl_lock_mode    = gc.runtime.controller_lock_mode;
             ctrl_lock_device  = gc.runtime.controller_lock_device;
+            /* [controller] guncon_ports: Namco GunCon on these console ports
+             * (sample_guncon_into_sio). Port 1's gun is plugged in now; later
+             * ports' guns follow gamepad availability each frame. */
+            for (const int port : gc.runtime.guncon_ports) {
+                if (port - 1 < PSX_MAX_PLAYERS) {
+                    g_guncon_cfg[port - 1] = 1;
+                    if (port == 1) sio_set_guncon(0, 1);
+                    printf("psxrecomp: GunCon on port %d (%s)\n", port,
+                           port == 1 ? "mouse or gamepad aims"
+                                     : "plugged in while a gamepad is free for it");
+                }
+            }
             if (gc.runtime.has_deadzone) {
                 resolved_deadzone = gc.runtime.deadzone;
                 for (int i = 0; i < PSX_MAX_PLAYERS; ++i)

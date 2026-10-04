@@ -340,6 +340,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_window_icon.cpp
     ${PSXRECOMP_ROOT}/runtime/src/psx_sdl_audio.cpp
     ${PSXRECOMP_ROOT}/runtime/src/psx_stick.c
+    ${PSXRECOMP_ROOT}/runtime/src/psx_guncon.c
     ${PSXRECOMP_ROOT}/runtime/src/memory.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_ram_geometry.c
     ${PSXRECOMP_ROOT}/runtime/src/kernel_patch_ranges.c

@@ -88,6 +88,8 @@
 #include "latency_ring.h"
 #include "frame_pacing.h"
 #include "psx_rewind.h"
+#include "psx_guncon.h"   /* gamepad-aimed GunCon sights */
+#include "sio.h"          /* PSX_MAX_PLAYERS */
 
 #include "psx_sdl.h"
 #if defined(PSX_SDL3)
@@ -4150,6 +4152,23 @@ static void letterbox_rect(int ww, int wh, int *x, int *y, int *w, int *h) {
     letterbox_rect_aspect(ww, wh, s_aspect_num, s_aspect_den, x, y, w, h);
 }
 
+int gl_renderer_window_to_display_uv(float win_x, float win_y, float *u, float *v) {
+    int ww = 0, wh = 0, pw = 0, ph = 0, lx, ly, lw, lh;
+    if (!s_win) return -1;
+    SDL_GL_GetDrawableSize(s_win, &pw, &ph);
+    SDL_GetWindowSize(s_win, &ww, &wh);
+    if (ww < 1 || wh < 1 || pw < 1 || ph < 1) return -1;
+    letterbox_rect(pw, ph, &lx, &ly, &lw, &lh);
+    if (lw < 1 || lh < 1) return -1;
+    /* Mouse events arrive in window points; the letterbox lives in drawable
+     * pixels (they differ on high-DPI displays). */
+    const float px = win_x * (float)pw / (float)ww;
+    const float py = win_y * (float)ph / (float)wh;
+    *u = (px - (float)lx) / (float)lw;
+    *v = (py - (float)ly) / (float)lh;
+    return (*u >= 0.f && *u < 1.f && *v >= 0.f && *v < 1.f) ? 1 : 0;
+}
+
 static GLuint make_tex(GLenum internal, int w, int h, GLenum fmt, GLenum type) {
     GLuint t = 0;
     glGenTextures(1, &t);
@@ -6692,7 +6711,54 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
 }
 
 /* Composite host toast + volume bar into the default framebuffer, then swap. */
+static void gl_fill_rect_px(int x, int y, int w, int h, int wh,
+                            float r, float g, float b) {
+    if (w < 1 || h < 1) return;
+    glScissor(x, wh - y - h, w, h);   /* GL scissor origin is bottom-left */
+    glClearColor(r, g, b, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+}
+
+/* Gamepad-aimed GunCon sights (psx_guncon_get_reticle): a gapped crosshair
+ * with a dark outline, P1 red / P2 blue like Point Blank's own HUD colours. */
+static void gl_draw_gun_reticles(void) {
+    int ww = 0, wh = 0, lx, ly, lw, lh;
+    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    if (ww < 1 || wh < 1) return;
+    letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
+    if (lw < 1 || lh < 1) return;
+    int drew = 0;
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        float u, v;
+        if (!psx_guncon_get_reticle(s, &u, &v)) continue;
+        if (!drew) {
+            p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+            glViewport(0, 0, ww, wh);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glEnable(GL_SCISSOR_TEST);
+            drew = 1;
+        }
+        const int cx = lx + (int)(u * (float)lw);
+        const int cy = ly + (int)(v * (float)lh);
+        int t = lh / 240; if (t < 1) t = 1;           /* one PSX line thick */
+        const int arm = 6 * t, gap = 3 * t, o = t;    /* outline width */
+        const float r = (s == 1) ? 0.25f : 1.f, g = (s == 1) ? 0.45f : 0.2f,
+                    b = (s == 1) ? 1.f : 0.2f;
+        for (int pass = 0; pass < 2; pass++) {
+            const int e = pass ? 0 : o;
+            const float pr = pass ? r : 0.f, pg = pass ? g : 0.f, pb = pass ? b : 0.f;
+            gl_fill_rect_px(cx - gap - arm - e, cy - t / 2 - e, arm + 2 * e, t + 2 * e, wh, pr, pg, pb);
+            gl_fill_rect_px(cx + gap - e, cy - t / 2 - e, arm + 2 * e, t + 2 * e, wh, pr, pg, pb);
+            gl_fill_rect_px(cx - t / 2 - e, cy - gap - arm - e, t + 2 * e, arm + 2 * e, wh, pr, pg, pb);
+            gl_fill_rect_px(cx - t / 2 - e, cy + gap - e, t + 2 * e, arm + 2 * e, wh, pr, pg, pb);
+            gl_fill_rect_px(cx - t / 2 - e, cy - t / 2 - e, t + 2 * e, t + 2 * e, wh, pr, pg, pb);
+        }
+    }
+    if (drew) glDisable(GL_SCISSOR_TEST);
+}
+
 static void gl_swap_with_osd(void) {
+    if (s_ctx) gl_draw_gun_reticles();
     if (s_present_prog && s_ctx) {
         int ww = 0, wh = 0;
         SDL_GL_GetDrawableSize(s_win, &ww, &wh);

@@ -173,6 +173,15 @@ void sio_netplay_canonicalize_session_pads(int slot_count);
  * analog/hybrid behaviour is unchanged. */
 void sio_set_pad_config_capable(int slot, int capable);
 
+/* Namco GunCon (NPC-103) on a logical slot: poll id 0x63, answers only 0x42.
+ * Buttons go through sio_set_pad_state_slot (active-low): trigger = bit 13,
+ * A = bit 3, B = bit 14, all other bits 1. Position is the beam X in 8 MHz
+ * clocks since HSYNC and Y in scanlines; pass (0x0001, 0x000A) for
+ * "no light seen" (aimed off-screen). See psx_guncon.h for the host mapping. */
+void sio_set_guncon(int slot, int enabled);
+int  sio_get_guncon(int slot);
+void sio_set_guncon_position(int slot, uint16_t x, uint16_t y);
+
 /* Read the raw DualShock motor state selected by the guest's 0x4D rumble map
  * and most recent 0x42 poll. `small` is the fixed-strength high-frequency
  * motor byte; `large` is the variable-strength low-frequency motor byte.

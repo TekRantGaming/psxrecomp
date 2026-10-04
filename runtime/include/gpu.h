@@ -86,6 +86,7 @@ void     gpu_depth24_on_savestate_loaded(void);
 /* GP1(06h)/GP1(07h)/GP1(08h) fields for debug (gpu_state). */
 void gpu_get_crtc_debug(uint32_t *x1, uint32_t *x2, uint32_t *y1, uint32_t *y2,
                         uint32_t *hres1_out, uint32_t *hres2_out);
+int      gpu_get_video_pal(void);  /* GP1(08h) standard in effect: 1 = PAL */
 uint64_t gpu_get_gp0_count(void);  /* Total GP0 writes since init */
 void gpu_get_gp0_stats(uint64_t* nop, uint64_t* fill, uint64_t* draw, uint64_t* env, uint64_t* copy);
 

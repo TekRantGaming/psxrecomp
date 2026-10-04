@@ -4008,6 +4008,11 @@ void gpu_get_crtc_debug(uint32_t *x1, uint32_t *x2, uint32_t *y1, uint32_t *y2,
     if (hres2_out) *hres2_out = hres2;
 }
 
+/* GP1(08h) video standard currently in effect: 1 = PAL, 0 = NTSC. */
+int gpu_get_video_pal(void) {
+    return video_mode != 0;
+}
+
 void gpu_set_vblank_callback(gpu_vblank_cb cb) {
     vblank_callback = cb;
 }

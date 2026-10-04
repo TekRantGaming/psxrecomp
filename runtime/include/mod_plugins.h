@@ -591,7 +591,10 @@ int psx_mod_set_controller_presentation_policy(
  * The registry itself uses function-local initialization, so constructor order
  * between game sources and the framework is safe.
  */
-#if defined(_MSC_VER)
+/* clang-cl defines _MSC_VER too, but drops the unreferenced .CRT$XCU pointer
+ * below as dead code, so the plugin never registers; clang (any driver) takes
+ * its native constructor attribute instead. */
+#if defined(_MSC_VER) && !defined(__clang__)
 #pragma section(".CRT$XCU", read)
 #define PSX_MOD_CONSTRUCTOR(name)                                           \
     static void __cdecl name(void);                                        \

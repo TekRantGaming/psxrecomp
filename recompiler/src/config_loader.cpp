@@ -863,6 +863,14 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (ct.contains("lock_device")) {
             rt.controller_lock_device = toml::find<bool>(ct, "lock_device");
         }
+        if (ct.contains("guncon_ports")) {
+            for (const auto n : toml::find<std::vector<int64_t>>(ct, "guncon_ports")) {
+                if (n != 1 && n != 2)
+                    throw std::runtime_error(fmt::format(
+                        "[controller] guncon_ports entries must be 1 or 2, got {}", n));
+                rt.guncon_ports.push_back(static_cast<int>(n));
+            }
+        }
         if (ct.contains("deadzone")) {
             const auto n = toml::find<int64_t>(ct, "deadzone");
             if (n < 0 || n > 32767)

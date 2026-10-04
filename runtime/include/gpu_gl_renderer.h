@@ -238,6 +238,11 @@ int gl_renderer_scale_info(GlScaleInfo *out);
  * changed num:den; 0, leaving it alone, before init or with no known limit. */
 int gl_renderer_fit_wide_aspect(int disp_w, int *num, int *den);
 
+/* Map a window position (SDL window points) to normalized 0..1 coordinates
+ * inside the presented display letterbox. Returns 1 when the point lies on the
+ * picture, 0 when it is outside it (u/v still written), -1 before init. */
+int gl_renderer_window_to_display_uv(float win_x, float win_y, float *u, float *v);
+
 /* Read the display rect at internal resolution from the hr FBO: (w*S) x (h*S)
  * ARGB8888, top row first. Returns the pixel count, 0 if unavailable or larger
  * than cap_px. Debug/verification only (screenshot_hires under GL). */
