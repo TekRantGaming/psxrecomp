@@ -1363,6 +1363,19 @@ struct UserSettings {
     // 0..1; the launcher ABI carries it as an integer percent.
     bool has_scanlines         = false; bool   scanlines         = false;
     bool has_scanline_strength = false; double scanline_strength = 0.5;
+    // PC post filters on presented game content (GL presenter).
+    bool has_fxaa        = false; bool fxaa        = false;
+    bool has_sharpen     = false; int  sharpen     = 0;   // 0..100 %
+    bool has_brightness  = false; int  brightness  = 100; // 50..150 %, applied as gamma
+    bool has_fps_counter = false; bool fps_counter = false;
+    // [gun] light-gun (GunCon) presentation and aiming.
+    //   crosshair: 0 off, 1 when aiming with a controller, 2 always (the mouse
+    //   cursor is then hidden over the game). style: 0 cross, 1 dot, 2 ring.
+    //   size: 0 small, 1 medium, 2 large. aim_speed: controller sight speed %.
+    bool has_gun_crosshair       = false; int gun_crosshair       = 1;
+    bool has_gun_crosshair_style = false; int gun_crosshair_style = 0;
+    bool has_gun_crosshair_size  = false; int gun_crosshair_size  = 1;
+    bool has_gun_aim_speed       = false; int gun_aim_speed       = 100;
     bool has_auto_skip_fmv  = false; bool auto_skip_fmv  = false; // skip FMVs
     // [video] turbo_loads: DEPRECATED AND IGNORED — the legacy home of the
     // generic Turbo loads switch, back when the launcher drew a row for it.

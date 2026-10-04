@@ -2629,6 +2629,18 @@ UserSettings load_user_settings(const fs::path& path) {
             if (d > 1.0) d = 1.0;
             s.scanline_strength = d; s.has_scanline_strength = true;
         });
+        if (v.contains("fxaa")) try_get([&]{
+            s.fxaa = toml::find<bool>(v, "fxaa"); s.has_fxaa = true;
+        });
+        if (v.contains("sharpen")) try_get([&]{
+            s.sharpen = std::clamp(toml::find<int>(v, "sharpen"), 0, 100); s.has_sharpen = true;
+        });
+        if (v.contains("brightness")) try_get([&]{
+            s.brightness = std::clamp(toml::find<int>(v, "brightness"), 50, 150); s.has_brightness = true;
+        });
+        if (v.contains("fps_counter")) try_get([&]{
+            s.fps_counter = toml::find<bool>(v, "fps_counter"); s.has_fps_counter = true;
+        });
         if (v.contains("auto_skip_fmv")) try_get([&]{
             s.auto_skip_fmv = toml::find<bool>(v, "auto_skip_fmv"); s.has_auto_skip_fmv = true;
         });
@@ -2713,6 +2725,21 @@ UserSettings load_user_settings(const fs::path& path) {
             }
             s.rewind_interval = best;
             s.has_rewind_interval = true;
+        });
+    }
+    if (doc.contains("gun")) {
+        const auto& g = toml::find(doc, "gun");
+        if (g.contains("crosshair")) try_get([&]{
+            s.gun_crosshair = std::clamp(toml::find<int>(g, "crosshair"), 0, 2); s.has_gun_crosshair = true;
+        });
+        if (g.contains("crosshair_style")) try_get([&]{
+            s.gun_crosshair_style = std::clamp(toml::find<int>(g, "crosshair_style"), 0, 2); s.has_gun_crosshair_style = true;
+        });
+        if (g.contains("crosshair_size")) try_get([&]{
+            s.gun_crosshair_size = std::clamp(toml::find<int>(g, "crosshair_size"), 0, 2); s.has_gun_crosshair_size = true;
+        });
+        if (g.contains("aim_speed")) try_get([&]{
+            s.gun_aim_speed = std::clamp(toml::find<int>(g, "aim_speed"), 25, 300); s.has_gun_aim_speed = true;
         });
     }
     if (doc.contains("audio")) {
@@ -2991,6 +3018,14 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "scanlines         = " << (s.scanlines ? "true" : "false") << "\n";
     if (s.has_scanline_strength)
         f << "scanline_strength = " << s.scanline_strength << "\n";
+    if (s.has_fxaa)
+        f << "fxaa              = " << (s.fxaa ? "true" : "false") << "\n";
+    if (s.has_sharpen)
+        f << "sharpen           = " << s.sharpen << "\n";
+    if (s.has_brightness)
+        f << "brightness        = " << s.brightness << "\n";
+    if (s.has_fps_counter)
+        f << "fps_counter       = " << (s.fps_counter ? "true" : "false") << "\n";
     if (s.has_auto_skip_fmv)
         f << "auto_skip_fmv     = " << (s.auto_skip_fmv ? "true" : "false") << "\n";
     /* turbo_loads is deliberately NOT written back: it is deprecated and no
@@ -3021,6 +3056,14 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "rewind_depth      = " << s.rewind_depth << "\n";
     if (s.has_rewind_interval)
         f << "rewind_interval   = " << s.rewind_interval << "\n";
+    if (s.has_gun_crosshair || s.has_gun_crosshair_style ||
+        s.has_gun_crosshair_size || s.has_gun_aim_speed) {
+        f << "\n[gun]\n";
+        if (s.has_gun_crosshair)       f << "crosshair       = " << s.gun_crosshair << "\n";
+        if (s.has_gun_crosshair_style) f << "crosshair_style = " << s.gun_crosshair_style << "\n";
+        if (s.has_gun_crosshair_size)  f << "crosshair_size  = " << s.gun_crosshair_size << "\n";
+        if (s.has_gun_aim_speed)       f << "aim_speed       = " << s.gun_aim_speed << "\n";
+    }
     f << "\n[audio]\n";
     if (s.has_audio_freq)
         f << "frequency = " << s.audio_freq << "\n";

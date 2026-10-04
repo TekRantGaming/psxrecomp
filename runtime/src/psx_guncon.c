@@ -19,6 +19,19 @@ void psx_guncon_set_reticle(int slot, int visible, float u, float v) {
     s_reticle_v[slot] = v;
 }
 
+static int s_reticle_style = 0;
+static int s_reticle_size = 1;
+
+void psx_guncon_set_reticle_style(int style, int size) {
+    s_reticle_style = (style >= 0 && style <= 2) ? style : 0;
+    s_reticle_size = (size >= 0 && size <= 2) ? size : 1;
+}
+
+void psx_guncon_get_reticle_style(int *style, int *size) {
+    *style = s_reticle_style;
+    *size = s_reticle_size;
+}
+
 int psx_guncon_get_reticle(int slot, float *u, float *v) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS || !s_reticle_on[slot]) return 0;
     *u = s_reticle_u[slot];

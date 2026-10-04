@@ -419,6 +419,10 @@ static GLint         s_present_uTex = -1, s_present_uUvRect = -1;
 static GLint         s_present_uTexSize = -1, s_present_uSharpScale = -1;
 static GLint         s_present_uSharp = -1;
 static GLint         s_present_uGamma = -1;
+static GLint         s_present_uFxaa = -1, s_present_uSharpen = -1, s_present_uPostPx = -1;
+/* Post filters for game content (gl_renderer_set_fxaa / _set_sharpen). */
+static int           s_fxaa_on = 0;
+static float         s_sharpen = 0.0f;
 /* Host-side presentation state. The shader applies this only to the source
  * image being presented; overlays and already-composed hold-last images set
  * the uniform back to the identity explicitly. */
@@ -1138,7 +1142,52 @@ static const char *PRESENT_FS =
     "uniform vec2 u_sharp_scale;\n"
     "uniform int  u_sharp;\n"
     "uniform float u_gamma;\n"
+    /* Post filters on game content (present_set_post): FXAA, contrast-adaptive
+     * sharpening 0..1, and the source texel size in uv units they step by. */
+    "uniform int   u_fxaa;\n"
+    "uniform float u_sharpen;\n"
+    "uniform vec2  u_post_px;\n"
     PSX_SCANLINE_UNIFORMS
+    "vec3 post_tap(vec2 uv){\n"
+    "  vec2 lo = min(u_uv_rect.xy, u_uv_rect.zw);\n"
+    "  vec2 hi = max(u_uv_rect.xy, u_uv_rect.zw);\n"
+    "  if (hi.x > lo.x && hi.y > lo.y) uv = clamp(uv, lo, hi);\n"
+    "  return texture(u_tex, uv).rgb;\n"
+    "}\n"
+    /* FXAA: blur along the local edge direction found from four diagonal luma
+     * taps, falling back to the narrower blend when the wide one overshoots. */
+    "vec3 fxaa(vec2 uv, vec3 rgbM){\n"
+    "  const vec3 L = vec3(0.299, 0.587, 0.114);\n"
+    "  vec2 px = u_post_px;\n"
+    "  float lNW = dot(post_tap(uv + vec2(-1.0, -1.0) * px), L);\n"
+    "  float lNE = dot(post_tap(uv + vec2( 1.0, -1.0) * px), L);\n"
+    "  float lSW = dot(post_tap(uv + vec2(-1.0,  1.0) * px), L);\n"
+    "  float lSE = dot(post_tap(uv + vec2( 1.0,  1.0) * px), L);\n"
+    "  float lM  = dot(rgbM, L);\n"
+    "  float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));\n"
+    "  float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));\n"
+    "  vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));\n"
+    "  float red = max((lNW + lNE + lSW + lSE) * (0.25 / 8.0), 1.0 / 128.0);\n"
+    "  float rcp = 1.0 / (min(abs(dir.x), abs(dir.y)) + red);\n"
+    "  dir = clamp(dir * rcp, vec2(-8.0), vec2(8.0)) * px;\n"
+    "  vec3 a = 0.5 * (post_tap(uv + dir * (1.0 / 3.0 - 0.5)) + post_tap(uv + dir * (2.0 / 3.0 - 0.5)));\n"
+    "  vec3 b = a * 0.5 + 0.25 * (post_tap(uv - dir * 0.5) + post_tap(uv + dir * 0.5));\n"
+    "  float lB = dot(b, L);\n"
+    "  return (lB < lMin || lB > lMax) ? a : b;\n"
+    "}\n"
+    /* Contrast-adaptive sharpening: a negative-lobe cross filter whose
+     * strength backs off where the neighbourhood is already high-contrast,
+     * so edges sharpen without ringing. */
+    "vec3 sharpen(vec2 uv, vec3 c){\n"
+    "  vec2 px = u_post_px;\n"
+    "  vec3 n = post_tap(uv + vec2(0.0, -px.y)), s = post_tap(uv + vec2(0.0, px.y));\n"
+    "  vec3 e = post_tap(uv + vec2(px.x, 0.0)),  w = post_tap(uv - vec2(px.x, 0.0));\n"
+    "  vec3 mn = min(c, min(min(n, s), min(e, w)));\n"
+    "  vec3 mx = max(c, max(max(n, s), max(e, w)));\n"
+    "  vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1.0e-4)), 0.0, 1.0));\n"
+    "  vec3 wgt = -amp * mix(0.08, 0.2, u_sharpen);\n"
+    "  return clamp((c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt), 0.0, 1.0);\n"
+    "}\n"
     /* Catmull-Rom bicubic via 9 bilinear taps. Sharper than plain bilinear at
      * the same smoothness, with mild overshoot that reads as edge definition.
      * The present texture holds exactly the source rect and wraps CLAMP_TO_EDGE,
@@ -1209,6 +1258,8 @@ static const char *PRESENT_FS =
     "      uv = clamp(uv, lo, hi);\n"
     "    }\n"
     "    c = texture(u_tex, uv);\n"
+    "    if (u_fxaa != 0 && u_post_px.x > 0.0) c.rgb = fxaa(uv, c.rgb);\n"
+    "    if (u_sharpen > 0.0 && u_post_px.x > 0.0) c.rgb = sharpen(uv, c.rgb);\n"
     "  }\n"
     "  c.rgb = psx_scanline(c.rgb, v_uv.y);\n"
     "  if (u_gamma > 0.0 && u_gamma != 1.0) c.rgb = pow(max(c.rgb, vec3(0.0)), vec3(1.0 / u_gamma));\n"
@@ -4056,6 +4107,18 @@ static void present_set_gamma(GLint uniform, int apply) {
         p_glUniform1f(uniform, apply ? s_present_gamma : 1.0f);
 }
 
+/* FXAA and sharpening apply to game content only (OSD, bezel and the
+ * already-composed hold-last image pass apply = 0). tex_w/tex_h are the bound
+ * texture's dimensions in texels, so the filters step one source texel. */
+static void present_set_post(int apply, int tex_w, int tex_h) {
+    const int on = apply && tex_w > 0 && tex_h > 0;
+    if (s_present_uFxaa >= 0) p_glUniform1i(s_present_uFxaa, on ? s_fxaa_on : 0);
+    if (s_present_uSharpen >= 0) p_glUniform1f(s_present_uSharpen, on ? s_sharpen : 0.0f);
+    if (s_present_uPostPx >= 0)
+        p_glUniform2f(s_present_uPostPx, on ? 1.0f / (float)tex_w : 0.0f,
+                      on ? 1.0f / (float)tex_h : 0.0f);
+}
+
 /* Push scanline uniforms into the currently-bound present or interpolation
  * program.
  *   pitch_lines = the height of the TEXTURE that v_uv is normalized against
@@ -4137,6 +4200,28 @@ void gl_renderer_set_post_gamma(float gamma) {
 
 float gl_renderer_get_post_gamma(void) {
     return s_present_gamma;
+}
+
+static void present_invalidate_latches(void) {
+    for (int i = 0; i < PRES_ROWS; i++) s_present_dirty[i] = ~0ull;
+    s_last_present_path = -1;
+    s_force_present_remaining = 2;
+    hold_invalidate();
+}
+
+void gl_renderer_set_fxaa(int on) {
+    on = on ? 1 : 0;
+    if (on == s_fxaa_on) return;
+    s_fxaa_on = on;
+    present_invalidate_latches();
+}
+
+void gl_renderer_set_sharpen(float amount) {
+    if (!isfinite(amount) || amount < 0.f) amount = 0.f;
+    if (amount > 1.f) amount = 1.f;
+    if (amount == s_sharpen) return;
+    s_sharpen = amount;
+    present_invalidate_latches();
 }
 
 /* Letterbox: largest num:den rect centered in the drawable. */
@@ -4687,6 +4772,12 @@ int gl_renderer_init_context(SDL_Window *win) {
                 p_glGetUniformLocation(s_present_prog, "u_sharp");
             s_present_uGamma =
                 p_glGetUniformLocation(s_present_prog, "u_gamma");
+            s_present_uFxaa =
+                p_glGetUniformLocation(s_present_prog, "u_fxaa");
+            s_present_uSharpen =
+                p_glGetUniformLocation(s_present_prog, "u_sharpen");
+            s_present_uPostPx =
+                p_glGetUniformLocation(s_present_prog, "u_post_px");
             s_present_uScanline =
                 p_glGetUniformLocation(s_present_prog, "u_scanline");
             s_present_uScanStrength =
@@ -4848,6 +4939,7 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
     upload_present_tex(pixels, src_w, src_h, filt_mode >= 0 ? 1 : 0);
     p_glUseProgram(s_present_prog); p_glUniform1i(s_present_uTex, 0);
     present_set_gamma(s_present_uGamma, 1);
+    present_set_post(1, src_w, src_h);
     present_set_sharp(filt_mode, src_w, src_h, lw, lh);
     /* CPU present texture holds exactly the display rect, so v_uv spans it and
      * pitch == display height == src_h. */
@@ -6696,6 +6788,7 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
     p_glUseProgram(s_present_prog);
     p_glUniform1i(s_present_uTex, 0);
     present_set_gamma(s_present_uGamma, 0);
+    present_set_post(0, 0, 0);
     present_set_sharp(0, 0, 0, 0, 0);   /* OSD is authored at output res */
     PRESENT_SCANLINE(0, 0, 0);          /* never scanline the host OSD */
     /* Host OSD bitmaps are top-down (row 0 = top), same as guest CPU
@@ -6741,17 +6834,50 @@ static void gl_draw_gun_reticles(void) {
         const int cx = lx + (int)(u * (float)lw);
         const int cy = ly + (int)(v * (float)lh);
         int t = lh / 240; if (t < 1) t = 1;           /* one PSX line thick */
-        const int arm = 6 * t, gap = 3 * t, o = t;    /* outline width */
+        int style, size;
+        psx_guncon_get_reticle_style(&style, &size);
+        static const int k_scale[3] = { 2, 3, 4 };    /* small, medium, large */
+        const int k = k_scale[size];
+        const int o = t;                              /* dark outline width */
         const float r = (s == 1) ? 0.25f : 1.f, g = (s == 1) ? 0.45f : 0.2f,
                     b = (s == 1) ? 1.f : 0.2f;
         for (int pass = 0; pass < 2; pass++) {
             const int e = pass ? 0 : o;
             const float pr = pass ? r : 0.f, pg = pass ? g : 0.f, pb = pass ? b : 0.f;
-            gl_fill_rect_px(cx - gap - arm - e, cy - t / 2 - e, arm + 2 * e, t + 2 * e, wh, pr, pg, pb);
-            gl_fill_rect_px(cx + gap - e, cy - t / 2 - e, arm + 2 * e, t + 2 * e, wh, pr, pg, pb);
-            gl_fill_rect_px(cx - t / 2 - e, cy - gap - arm - e, t + 2 * e, arm + 2 * e, wh, pr, pg, pb);
-            gl_fill_rect_px(cx - t / 2 - e, cy + gap - e, t + 2 * e, arm + 2 * e, wh, pr, pg, pb);
-            gl_fill_rect_px(cx - t / 2 - e, cy - t / 2 - e, t + 2 * e, t + 2 * e, wh, pr, pg, pb);
+            if (style == 0) {                         /* gapped cross */
+                const int arm = 2 * k * t, gap = k * t;
+                gl_fill_rect_px(cx - gap - arm - e, cy - t / 2 - e, arm + 2 * e, t + 2 * e, wh, pr, pg, pb);
+                gl_fill_rect_px(cx + gap - e, cy - t / 2 - e, arm + 2 * e, t + 2 * e, wh, pr, pg, pb);
+                gl_fill_rect_px(cx - t / 2 - e, cy - gap - arm - e, t + 2 * e, arm + 2 * e, wh, pr, pg, pb);
+                gl_fill_rect_px(cx - t / 2 - e, cy + gap - e, t + 2 * e, arm + 2 * e, wh, pr, pg, pb);
+                gl_fill_rect_px(cx - t / 2 - e, cy - t / 2 - e, t + 2 * e, t + 2 * e, wh, pr, pg, pb);
+            } else {                                  /* dot, or ring + centre dot */
+                const int dot = (style == 1 ? k : 1) * t / 2 + (style == 1 ? t / 2 : 1);
+                const int ro = 3 * k * t / 2 + t;     /* ring outer radius */
+                const int ri = ro - t;                /* ring inner radius */
+                const int rmax = (style == 1 ? dot : ro) + e;
+                for (int dy = -rmax; dy <= rmax; dy++) {
+                    const float fy = (float)dy;
+                    /* filled dot */
+                    const float rd = (float)(dot + e);
+                    if (fy * fy <= rd * rd) {
+                        const int hw = (int)sqrtf(rd * rd - fy * fy);
+                        gl_fill_rect_px(cx - hw, cy + dy, 2 * hw + 1, 1, wh, pr, pg, pb);
+                    }
+                    if (style != 2) continue;
+                    /* ring: the part of the outer disc outside the inner one */
+                    const float rO = (float)(ro + e), rI = (float)(ri - e);
+                    if (fy * fy > rO * rO) continue;
+                    const int ho = (int)sqrtf(rO * rO - fy * fy);
+                    const int hi = (fy * fy < rI * rI) ? (int)sqrtf(rI * rI - fy * fy) : -1;
+                    if (hi < 0) {
+                        gl_fill_rect_px(cx - ho, cy + dy, 2 * ho + 1, 1, wh, pr, pg, pb);
+                    } else {
+                        gl_fill_rect_px(cx - ho, cy + dy, ho - hi, 1, wh, pr, pg, pb);
+                        gl_fill_rect_px(cx + hi + 1, cy + dy, ho - hi, 1, wh, pr, pg, pb);
+                    }
+                }
+            }
         }
     }
     if (drew) glDisable(GL_SCISSOR_TEST);
@@ -6864,6 +6990,8 @@ static void present_target_quad(GLuint tex, int tex_w, int tex_h,
     p_glUseProgram(s_present_prog);
     p_glUniform1i(s_present_uTex, 0);
     present_set_gamma(s_present_uGamma, apply_gamma);
+    present_set_post(apply_gamma && v_flip && !area, tex_w * (src_scale > 1 ? src_scale : 1),
+                     tex_h * (src_scale > 1 ? src_scale : 1));
     /* The rasterized path already renders at the internal scale, so it has no
      * low-res source to reconstruct — keep the plain sample, unless the
      * internal image is larger than the output: then resolve its area. */
@@ -6955,6 +7083,7 @@ static void present_bezel(int ww, int wh, int lx, int ly, int lw, int lh) {
     p_glUseProgram(s_present_prog);
     p_glUniform1i(s_present_uTex, 0);
     present_set_gamma(s_present_uGamma, 0);
+    present_set_post(0, 0, 0);
     p_glUniform4f(s_present_uUvRect, 0.0f, 0.0f, 1.0f, 1.0f);
     PRESENT_SCANLINE(0, 0, 0);          /* bezel art is not scanlined */
     p_glBindVertexArray(s_present_vao);

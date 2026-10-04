@@ -37,6 +37,10 @@ void psx_guncon_apply(int slot, int on_screen, float u, float v, uint16_t presse
 void psx_guncon_set_reticle(int slot, int visible, float u, float v);
 int  psx_guncon_get_reticle(int slot, float *u, float *v);
 
+/* Sight look: style 0 cross, 1 dot, 2 ring; size 0 small, 1 medium, 2 large. */
+void psx_guncon_set_reticle_style(int style, int size);
+void psx_guncon_get_reticle_style(int *style, int *size);
+
 #ifdef __cplusplus
 }
 #endif

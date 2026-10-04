@@ -1203,6 +1203,16 @@ static int           g_video_fmv_filter = PSXRecompV4::VIDEO_FMV_FILTER_DEFAULT;
  * GL renderer each present alongside the FMV filter. */
 static bool          g_video_scanlines = false;
 static float         g_video_scanline_strength = 0.5f;
+/* PC presentation options (settings.toml [video] fxaa/sharpen/brightness/
+ * fps_counter and [gun]). Pushed together by apply_pc_video_settings. */
+static bool          g_video_fxaa = false;
+static int           g_video_sharpen = 0;        /* 0..100 % */
+static int           g_video_brightness = 100;   /* 50..150 %, as present gamma */
+static bool          g_fps_counter = false;
+static int           g_gun_crosshair = 1;        /* 0 off, 1 controller, 2 always */
+static int           g_gun_crosshair_style = 0;  /* 0 cross, 1 dot, 2 ring */
+static int           g_gun_crosshair_size = 1;   /* 0 small, 1 medium, 2 large */
+static int           g_gun_aim_speed = 100;      /* controller sight speed % */
 
 /* Single point that changes scanline state: keeps the g_video_* mirror (used by
  * the hotkey and startup banner) in lockstep with the GL renderer, so the F6
@@ -1217,6 +1227,20 @@ extern "C" void psx_video_set_scanlines(int on, float strength) {
 extern "C" int psx_video_get_scanlines(float *strength) {
     if (strength) *strength = g_video_scanline_strength;
     return g_video_scanlines ? 1 : 0;
+}
+
+/* Push the PC presentation options to the renderer, the GunCon sight and the
+ * FPS readout (the same readout the DisplayPerf hotkey toggles). */
+static void apply_pc_video_settings(void) {
+    gl_renderer_set_fxaa(g_video_fxaa ? 1 : 0);
+    gl_renderer_set_sharpen((float)g_video_sharpen / 100.0f);
+    gl_renderer_set_post_gamma((float)g_video_brightness / 100.0f);
+    psx_guncon_set_reticle_style(g_gun_crosshair_style, g_gun_crosshair_size);
+    s_fps_telemetry_enabled = g_fps_counter ? 1 : 0;
+    s_fps_last_time = 0;
+    s_fps_last_frame = 0;
+    if (!g_fps_counter)
+        host_osd_set_status(NULL);
 }
 
 /* recomp-ui stores this 1-based so a zero-initialized (older) host reads as
@@ -6336,9 +6360,9 @@ static void sample_guncon_into_sio(int s) {
     if (h) {
         float vx = 0.f, vy = 0.f;
         gun_stick_velocity(h, SDL_CONTROLLER_AXIS_LEFTX, SDL_CONTROLLER_AXIS_LEFTY,
-                           1.4f, &vx, &vy);
+                           1.4f * (float)g_gun_aim_speed / 100.0f, &vx, &vy);
         gun_stick_velocity(h, SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_RIGHTY,
-                           0.45f, &vx, &vy);
+                           0.45f * (float)g_gun_aim_speed / 100.0f, &vx, &vy);
         if (vx != 0.f || vy != 0.f) {
             if (a.src != 2) {   /* take over from where the mouse was aiming */
                 if (a.src == 1 && mouse_on) { a.u = mu; a.v = mv; }
@@ -6372,7 +6396,27 @@ static void sample_guncon_into_sio(int s) {
     if (a.src == 2)      { u = a.u; v = a.v; on_screen = 1; }
     else if (s == 0)     { u = mu; v = mv; on_screen = mouse_on; }
     if (force_offscreen) on_screen = 0;
-    psx_guncon_set_reticle(s, a.src == 2, a.u, a.v);
+    /* Sight: [gun] crosshair 0 = never, 1 = only for a controller-aimed gun,
+     * 2 = always, including the mouse (whose cursor is then hidden over the
+     * picture so only the sight shows). */
+    const int mouse_sight = (g_gun_crosshair == 2 && s == 0 && a.src != 2 && mouse_on);
+    if (s == 0) {
+        static int s_cursor_hidden = 0;
+        if (mouse_sight != s_cursor_hidden) {
+#if defined(PSX_SDL3)
+            if (mouse_sight) SDL_HideCursor(); else SDL_ShowCursor();
+#else
+            SDL_ShowCursor(mouse_sight ? SDL_DISABLE : SDL_ENABLE);
+#endif
+            s_cursor_hidden = mouse_sight;
+        }
+    }
+    if (g_gun_crosshair == 0)
+        psx_guncon_set_reticle(s, 0, 0.f, 0.f);
+    else if (a.src == 2)
+        psx_guncon_set_reticle(s, 1, a.u, a.v);
+    else
+        psx_guncon_set_reticle(s, mouse_sight, mu, mv);
     psx_guncon_apply(s, on_screen, u, v, guard ? 0 : pressed);
 }
 
@@ -13399,10 +13443,14 @@ namespace {
     }
 #endif
 
+    /* Install to game folder target: <exe dir>/disc (launcher disc panel). */
+    static std::string g_rui_disc_install_dir;
+
     void ae_rui_set_sidecar_paths(const char* argv0) {
         const auto exe = exe_dir_from_argv(argv0 ? argv0 : "");
         g_rui_keybinds_path = (exe / "keybinds.ini").string();
         g_rui_config_ini_path = (exe / "config.ini").string();
+        g_rui_disc_install_dir = (exe / "disc").u8string();
     }
 
     void ae_fill_psx_launcher_game_info(
@@ -13580,6 +13628,13 @@ namespace {
 #else
         gi->resume_netplay_endpoint = nullptr;
 #endif
+        /* Light gun panel when game.toml plugs a GunCon in; disc install
+         * copies the player's disc next to the game. */
+        gi->has_light_gun = 0;
+        for (int k = 0; k < PSX_MAX_PLAYERS; k++)
+            if (g_guncon_cfg[k]) gi->has_light_gun = 1;
+        gi->has_disc_install = g_rui_disc_install_dir.empty() ? 0 : 1;
+        gi->disc_install_dir = g_rui_disc_install_dir.c_str();
     }
 }  // namespace
 #endif
@@ -14454,6 +14509,14 @@ int main(int argc, char** argv) {
         if (us.has_scanlines)      g_video_scanlines = us.scanlines;
         if (us.has_scanline_strength)
             g_video_scanline_strength = (float)us.scanline_strength;
+        if (us.has_fxaa)        g_video_fxaa = us.fxaa;
+        if (us.has_sharpen)     g_video_sharpen = us.sharpen;
+        if (us.has_brightness)  g_video_brightness = us.brightness;
+        if (us.has_fps_counter) g_fps_counter = us.fps_counter;
+        if (us.has_gun_crosshair)       g_gun_crosshair = us.gun_crosshair;
+        if (us.has_gun_crosshair_style) g_gun_crosshair_style = us.gun_crosshair_style;
+        if (us.has_gun_crosshair_size)  g_gun_crosshair_size = us.gun_crosshair_size;
+        if (us.has_gun_aim_speed)       g_gun_aim_speed = us.gun_aim_speed;
         if (us.has_auto_skip_fmv)  g_auto_skip_fmv   = us.auto_skip_fmv ? 1 : 0;
         /* turbo_loads is deliberately NOT restored from settings.toml. It is a
          * write-only latch: the launcher stopped drawing a Turbo loads row when
@@ -15021,6 +15084,14 @@ int main(int argc, char** argv) {
             seed.scanlines = g_video_scanlines;           seed.has_scanlines = true;
             seed.scanline_strength = g_video_scanline_strength;
             seed.has_scanline_strength = true;
+            seed.fxaa = g_video_fxaa;               seed.has_fxaa = true;
+            seed.sharpen = g_video_sharpen;         seed.has_sharpen = true;
+            seed.brightness = g_video_brightness;   seed.has_brightness = true;
+            seed.fps_counter = g_fps_counter;       seed.has_fps_counter = true;
+            seed.gun_crosshair = g_gun_crosshair;               seed.has_gun_crosshair = true;
+            seed.gun_crosshair_style = g_gun_crosshair_style;   seed.has_gun_crosshair_style = true;
+            seed.gun_crosshair_size = g_gun_crosshair_size;     seed.has_gun_crosshair_size = true;
+            seed.gun_aim_speed = g_gun_aim_speed;               seed.has_gun_aim_speed = true;
             seed.auto_skip_fmv = (g_auto_skip_fmv != 0);
             seed.has_auto_skip_fmv = skip_fmv_offered;
             seed.turbo_loads = (g_turbo_loads_enabled != 0);
@@ -15221,6 +15292,16 @@ int main(int argc, char** argv) {
             ls.scanlines             = seed.scanlines ? 1 : 0;
             ls.scanline_strength_pct = seed.has_scanline_strength
                 ? (int)(seed.scanline_strength * 100.0 + 0.5) : 50;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_PC_OPTIONS)
+            ls.fxaa                = seed.fxaa ? 1 : 0;
+            ls.sharpen_pct         = seed.sharpen;
+            ls.brightness_pct      = seed.brightness;
+            ls.fps_counter         = seed.fps_counter ? 1 : 0;
+            ls.gun_crosshair       = seed.gun_crosshair;
+            ls.gun_crosshair_style = seed.gun_crosshair_style;
+            ls.gun_crosshair_size  = seed.gun_crosshair_size;
+            ls.gun_aim_speed_pct   = seed.gun_aim_speed;
 #endif
             ls.frame_interp       = seed.frame_interpolation ? 1 : 0;
             ls.frame_interp_fps   = seed.frame_interpolation_fps;
@@ -15560,6 +15641,16 @@ int main(int argc, char** argv) {
                     seed.has_scanline_strength = true;
                 }
 #endif
+#if defined(RECOMP_LAUNCHER_HAS_PC_OPTIONS)
+                seed.fxaa = ls.fxaa != 0;                     seed.has_fxaa = true;
+                seed.sharpen = ls.sharpen_pct;                seed.has_sharpen = true;
+                seed.brightness = ls.brightness_pct;          seed.has_brightness = true;
+                seed.fps_counter = ls.fps_counter != 0;       seed.has_fps_counter = true;
+                seed.gun_crosshair = ls.gun_crosshair;               seed.has_gun_crosshair = true;
+                seed.gun_crosshair_style = ls.gun_crosshair_style;   seed.has_gun_crosshair_style = true;
+                seed.gun_crosshair_size = ls.gun_crosshair_size;     seed.has_gun_crosshair_size = true;
+                seed.gun_aim_speed = ls.gun_aim_speed_pct;           seed.has_gun_aim_speed = true;
+#endif
                 seed.frame_interpolation   = ls.frame_interp != 0;     seed.has_frame_interpolation   = true;
                 seed.frame_interpolation_fps = ls.frame_interp_fps;    seed.has_frame_interpolation_fps = true;
                 seed.audio_freq            = ls.audio_freq;            seed.has_audio_freq            = true;
@@ -15812,6 +15903,15 @@ int main(int argc, char** argv) {
                     g_video_scanline_strength = (float)seed.scanline_strength;
                 gl_renderer_set_scanlines(g_video_scanlines ? 1 : 0,
                                           g_video_scanline_strength);
+                if (seed.has_fxaa)        g_video_fxaa = seed.fxaa;
+                if (seed.has_sharpen)     g_video_sharpen = seed.sharpen;
+                if (seed.has_brightness)  g_video_brightness = seed.brightness;
+                if (seed.has_fps_counter) g_fps_counter = seed.fps_counter;
+                if (seed.has_gun_crosshair)       g_gun_crosshair = seed.gun_crosshair;
+                if (seed.has_gun_crosshair_style) g_gun_crosshair_style = seed.gun_crosshair_style;
+                if (seed.has_gun_crosshair_size)  g_gun_crosshair_size = seed.gun_crosshair_size;
+                if (seed.has_gun_aim_speed)       g_gun_aim_speed = seed.gun_aim_speed;
+                apply_pc_video_settings();
                 g_auto_skip_fmv = skip_fmv_offered && seed.auto_skip_fmv ? 1 : 0;
                 g_turbo_loads_enabled =
                     turbo_loads_offered && seed.turbo_loads ? 1 : 0;
@@ -16246,6 +16346,7 @@ session_reboot:
     }
     gl_renderer_set_scanlines(g_video_scanlines ? 1 : 0,
                               g_video_scanline_strength);
+    apply_pc_video_settings();
     if (pgxp_arm.geometry || pgxp_arm.texture) {
         std::fprintf(stdout,
                      "psxrecomp: geometry correction %s, perspective texturing %s%s%s%s\n",
@@ -17445,6 +17546,16 @@ soft_return_lobby:
         ls.scanlines             = g_video_scanlines ? 1 : 0;
         ls.scanline_strength_pct = (int)(g_video_scanline_strength * 100.0f + 0.5f);
 #endif
+#if defined(RECOMP_LAUNCHER_HAS_PC_OPTIONS)
+        ls.fxaa                = g_video_fxaa ? 1 : 0;
+        ls.sharpen_pct         = g_video_sharpen;
+        ls.brightness_pct      = g_video_brightness;
+        ls.fps_counter         = g_fps_counter ? 1 : 0;
+        ls.gun_crosshair       = g_gun_crosshair;
+        ls.gun_crosshair_style = g_gun_crosshair_style;
+        ls.gun_crosshair_size  = g_gun_crosshair_size;
+        ls.gun_aim_speed_pct   = g_gun_aim_speed;
+#endif
         ls.frame_interp = g_frame_interpolation ? 1 : 0;
         ls.frame_interp_fps = g_frame_interpolation_fps;
         ls.spu_hq = g_audio_spu_hq ? 1 : 0;
@@ -17827,6 +17938,16 @@ soft_return_lobby:
                     us.scanline_strength = ls.scanline_strength_pct / 100.0;
                     us.has_scanline_strength = true;
                 }
+#if defined(RECOMP_LAUNCHER_HAS_PC_OPTIONS)
+                us.fxaa = ls.fxaa != 0;                   us.has_fxaa = true;
+                us.sharpen = ls.sharpen_pct;              us.has_sharpen = true;
+                us.brightness = ls.brightness_pct;        us.has_brightness = true;
+                us.fps_counter = ls.fps_counter != 0;     us.has_fps_counter = true;
+                us.gun_crosshair = ls.gun_crosshair;               us.has_gun_crosshair = true;
+                us.gun_crosshair_style = ls.gun_crosshair_style;   us.has_gun_crosshair_style = true;
+                us.gun_crosshair_size = ls.gun_crosshair_size;     us.has_gun_crosshair_size = true;
+                us.gun_aim_speed = ls.gun_aim_speed_pct;           us.has_gun_aim_speed = true;
+#endif
 #endif
                 us.frame_interpolation = ls.frame_interp != 0;
                 us.has_frame_interpolation = true;
@@ -17897,6 +18018,17 @@ soft_return_lobby:
                 g_video_scanline_strength = ls.scanline_strength_pct / 100.0f;
             gl_renderer_set_scanlines(g_video_scanlines ? 1 : 0,
                                       g_video_scanline_strength);
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_PC_OPTIONS)
+            g_video_fxaa = ls.fxaa != 0;
+            g_video_sharpen = ls.sharpen_pct;
+            g_video_brightness = ls.brightness_pct;
+            g_fps_counter = ls.fps_counter != 0;
+            g_gun_crosshair = ls.gun_crosshair;
+            g_gun_crosshair_style = ls.gun_crosshair_style;
+            g_gun_crosshair_size = ls.gun_crosshair_size;
+            g_gun_aim_speed = ls.gun_aim_speed_pct;
+            apply_pc_video_settings();
 #endif
             /* Load acceleration and FMV skipping are mod-owned on PSX, and the
              * launcher struct these come from was snapshotted BEFORE

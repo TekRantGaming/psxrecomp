@@ -191,6 +191,9 @@ void gl_renderer_set_display_aspect(int num, int den);
  * with output scale so it never shimmers on a sub-2x window. gl_renderer_get_
  * scanlines returns the on flag and (via out-param) the current strength. */
 void gl_renderer_set_scanlines(int on, float strength);
+/* FXAA and contrast-adaptive sharpening (0..1) on presented game content. */
+void gl_renderer_set_fxaa(int on);
+void gl_renderer_set_sharpen(float amount);
 int  gl_renderer_get_scanlines(float *strength);
 
 /* Presentation-only gamma adjustment. gamma = 1.0 is the identity; values
