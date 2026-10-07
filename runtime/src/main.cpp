@@ -5367,7 +5367,14 @@ struct PadSources {
     bool all_pads;  /* every connected controller (dev-any-input)              */
 };
 
-static PadSources pad_sources_for(const PlayerInput& p, bool dev_here) {
+/* Another seat is routed to the keyboard itself. */
+static bool keyboard_routed_to_other_slot(int self_slot) {
+    for (int t = 0; t < PSX_MAX_PLAYERS; ++t)
+        if (t != self_slot && g_players[t].kind == 1) return true;
+    return false;
+}
+
+static PadSources pad_sources_for(const PlayerInput& p, int slot, bool dev_here) {
     PadSources s;
     s.device   = (p.kind != 0);
     /* Keybinds are ALWAYS live, including alongside a routed gamepad: that is
@@ -5386,9 +5393,13 @@ static PadSources pad_sources_for(const PlayerInput& p, bool dev_here) {
      * The PSX pad word is active-low and the merge is an AND, so an unpressed
      * source is a no-op: a pad-only player is unaffected. kind==1 already
      * consumes the binds through pad_buttons_for/pad_sticks_for, and applying
-     * them twice is idempotent. */
-    (void)dev_here;
-    s.keybinds = true;
+     * them twice is idempotent.
+     *
+     * Except while another seat is routed to the keyboard: every keybinds.ini
+     * section defaults to the same keys, so a controller P1 also took the
+     * keyboard P2's presses and both fighters moved together in a controller
+     * + keyboard VS match. The keyboard then belongs to the seat routed to it. */
+    s.keybinds = p.kind == 1 || dev_here || !keyboard_routed_to_other_slot(slot);
     s.all_pads = dev_here;
     return s;
 }
@@ -5730,7 +5741,7 @@ static int capture_pad_slot(int s, PsxNetPad* out) {
      * all connected controllers. */
     /* One source set, consumed by the presentation policy, the button merge and the
      * stick fold below — see pad_sources_for(). */
-    const PadSources src = pad_sources_for(p, dev_here);
+    const PadSources src = pad_sources_for(p, s, dev_here);
 
     const int mode = effective_player_mode_for_sio(p, s);
     uint8_t st[4] = { 0x80, 0x80, 0x80, 0x80 };
@@ -5816,7 +5827,7 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
 
     /* Same predicate as capture_pad_slot, with dev-any-input disabled:
      * netplay must stay exclusive so peers hash-agree. */
-    const PadSources src = pad_sources_for(p, dev_here);
+    const PadSources src = pad_sources_for(p, s, dev_here);
     const int sio_slot = (present_sio_slot >= 0) ? present_sio_slot : s;
     int mode = effective_player_mode_for_sio(p, sio_slot);
     uint8_t st[4] = { 0x80, 0x80, 0x80, 0x80 };
