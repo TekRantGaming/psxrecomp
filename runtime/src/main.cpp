@@ -3246,11 +3246,24 @@ static void apply_netplay_local_viewport_aspect(bool netplay_enabled) {
  * wall-clock pacer double-blocks the vblank callback (present is before the
  * guest resumes), which shows up as MotK FMV ~30–40 FPS in netplay vs ~50+
  * offline. Force immediate swaps for the session; restore on soft-exit. */
-static int host_refresh_matches_guest_cadence(void) {
+/* Refreshes per guest frame when the panel runs at a whole multiple (1x-4x)
+ * of the guest rate within 2%: 60 Hz -> 1, 120 Hz -> 2, 240 Hz -> 4. 0 when
+ * it does not (144 Hz, 165 Hz). On a multiple, driver vsync with a swap
+ * interval of that many refreshes shows every guest frame for exactly the
+ * same time; the wall-clock pacer alone cannot, and leaves frames on screen
+ * for one, two or three refreshes in turn (judder) with tearing. */
+static int host_refresh_guest_multiple(void) {
     if (g_host_refresh_hz <= 0.0 || g_guest_frame_period_ms <= 0.0)
         return 0;
     const double guest_hz = 1000.0 / g_guest_frame_period_ms;
-    return std::fabs(g_host_refresh_hz - guest_hz) <= guest_hz * 0.02;
+    const int k = (int)std::lround(g_host_refresh_hz / guest_hz);
+    if (k < 1 || k > 4)
+        return 0;
+    return std::fabs(g_host_refresh_hz - k * guest_hz) <= k * guest_hz * 0.02 ? k : 0;
+}
+
+static int host_refresh_matches_guest_cadence(void) {
+    return host_refresh_guest_multiple() != 0;
 }
 
 static void refresh_host_display_cadence(int force_log, int force_probe) {
@@ -3288,9 +3301,11 @@ static void refresh_host_display_cadence(int force_log, int force_probe) {
     g_host_refresh_hz = host_hz;
     g_frame_period_ms = g_guest_frame_period_ms;
     if (host_refresh_matches_guest_cadence()) {
-        g_frame_period_ms = 1000.0 / host_hz;
-        std::printf("psxrecomp: sync-to-host-refresh: pacing to %.1f Hz panel "
-                    "(%.4f ms/frame)\n", host_hz, g_frame_period_ms);
+        const int refreshes = host_refresh_guest_multiple();
+        g_frame_period_ms = 1000.0 * refreshes / host_hz;
+        std::printf("psxrecomp: sync-to-host-refresh: pacing to %.1f Hz panel, "
+                    "%d refresh(es) per frame (%.4f ms/frame)\n",
+                    host_hz, refreshes, g_frame_period_ms);
     } else if (host_hz > 0.0) {
         std::printf("psxrecomp: host panel %.1f Hz does not match guest "
                     "cadence; keeping %.2f Hz pacing\n",
@@ -3405,7 +3420,7 @@ static int present_effective_swap_interval(void) {
     if (g_frame_period_ms <= 0.0)
         return 0;
     if (present_vsync_owns_cadence())
-        return g_video_vsync;
+        return g_video_vsync * host_refresh_guest_multiple();
     return 0;
 }
 

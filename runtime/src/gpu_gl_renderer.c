@@ -4737,12 +4737,12 @@ int gl_renderer_init_context(SDL_Window *win) {
     s_ctx = SDL_GL_CreateContext(win);
     if (!s_ctx) { fprintf(stdout, "psxrecomp: GL context creation failed (%s)\n", SDL_GetError()); return 0; }
     if (SDL_GL_MakeCurrent(win, s_ctx) != 0) { fprintf(stdout, "psxrecomp: MakeCurrent failed (%s)\n", SDL_GetError()); SDL_GL_DeleteContext(s_ctx); s_ctx=NULL; return 0; }
-    /* Swap interval: 1=vsync (tear-free, default), 0=immediate (lowest display
-     * latency, may tear; our wall-clock pacer still holds 59.94Hz), -1=adaptive.
-     * Adaptive falls back to vsync if the driver rejects it. */
+    /* Swap interval: N>0 = vsync every N refreshes (tear-free, default 1), 0 = immediate
+     * (lowest display latency, may tear; our wall-clock pacer still holds 59.94Hz),
+     * -N = adaptive. Adaptive falls back to vsync if the driver rejects it. */
     if (SDL_GL_SetSwapInterval(s_swap_interval) != 0 && s_swap_interval < 0) {
-        SDL_GL_SetSwapInterval(1);
-        s_swap_interval = 1;
+        s_swap_interval = -s_swap_interval;
+        SDL_GL_SetSwapInterval(s_swap_interval);
     }
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
     const char *ver = (const char *)glGetString(GL_VERSION);
@@ -4827,8 +4827,8 @@ void gl_renderer_set_swap_interval(int interval) {
     s_swap_interval = interval;
     if (s_ctx) {
         if (SDL_GL_SetSwapInterval(interval) != 0 && interval < 0) {
-            SDL_GL_SetSwapInterval(1);
-            s_swap_interval = 1;
+            s_swap_interval = -interval;
+            SDL_GL_SetSwapInterval(s_swap_interval);
         }
     }
 }
