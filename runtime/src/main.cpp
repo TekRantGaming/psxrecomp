@@ -1625,6 +1625,15 @@ static std::string session_disc_path(const std::filesystem::path& stock_disc) {
     return mod_disc.string();
 }
 
+extern "C" int psx_mod_set_cpu_overclock(uint32_t percent) {
+    if (percent < 100 || percent > 800)
+        return 0;
+    g_psx_cpu_overclock_pct = percent;
+    std::fprintf(stdout, "psxrecomp: mod selected CPU overclock %u%%\n",
+                 (unsigned)percent);
+    return 1;
+}
+
 extern "C" int psx_mod_set_native_vblank_rate(
     uint32_t frames_per_second) {
     if (frames_per_second != 0 &&

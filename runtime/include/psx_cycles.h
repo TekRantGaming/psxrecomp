@@ -66,6 +66,14 @@ extern int g_psx_cyc_bb_defer;
  * via psx_cyc_local_publish / psx_cyc_batch_flush before IRQ/MMIO barriers. */
 extern uint32_t *g_psx_cyc_local_acc;
 
+/* CPU overclock (percent, 100 = stock R3000A). Above 100 the CPU's own
+ * charges are scaled by 100/percent before they reach guest time, so the CPU
+ * retires more instructions per VBlank while timers, VBlank, CD, SPU and DMA
+ * deadlines keep their real rate. Selected by a trusted mod
+ * (psx_mod_set_cpu_overclock); 100 leaves the faithful path untouched. */
+extern uint32_t g_psx_cpu_overclock_pct;
+uint32_t psx_cpu_overclock_scale(uint32_t cycles);
+
 /* Advance guest time. Overlay DLLs forward this through their callback shim;
  * normal runtime/generated code keeps the common production path inlined. */
 #if defined(PSX_OVERLAY_DLL_BUILD)
@@ -113,6 +121,10 @@ static inline void psx_advance_cycles(uint32_t cycles) {
     if (psx_in_device_service) {
         psx_cycle_count += (uint64_t)cycles;
         return;
+    }
+    if (g_psx_cpu_overclock_pct > 100u) {
+        cycles = psx_cpu_overclock_scale(cycles);
+        if (cycles == 0u) return;
     }
     psx_cycle_count += (uint64_t)cycles;
     if (psx_next_service_cycle == 0u ||

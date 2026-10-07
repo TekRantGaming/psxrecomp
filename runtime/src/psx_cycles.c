@@ -26,6 +26,16 @@ uint32_t g_psx_cyc_batch = 0;
 uint32_t g_psx_cyc_batch_limit = 0;
 int      g_psx_cyc_bb_defer = 0;
 uint32_t *g_psx_cyc_local_acc = NULL;
+uint32_t g_psx_cpu_overclock_pct = 100u;
+static uint32_t s_overclock_rem = 0;
+
+/* cycles * 100 / percent, carrying the remainder so no time is lost. */
+uint32_t psx_cpu_overclock_scale(uint32_t cycles) {
+    const uint32_t pct = g_psx_cpu_overclock_pct;
+    uint64_t t = (uint64_t)cycles * 100u + s_overclock_rem;
+    s_overclock_rem = (uint32_t)(t % pct);
+    return (uint32_t)(t / pct);
+}
 static int      s_cycle_replay_active = 0;
 static uint64_t s_cycle_replay_live = 0;
 

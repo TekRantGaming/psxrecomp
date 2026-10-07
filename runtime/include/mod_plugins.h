@@ -302,6 +302,14 @@ int psx_mod_set_adaptive_display_aspect(uint32_t max_numerator,
  * machine realtime speed and is for experimental game-owned frame-rate mods.
  */
 int psx_mod_set_native_vblank_rate(uint32_t frames_per_second);
+/*
+ * Overclock the emulated CPU: percent of the stock R3000A speed, 100..800.
+ * Guest VBlanks, timers, CD, SPU and DMA keep their real rate; only the CPU
+ * gets more done per frame. For a variable-timestep game held below 60 FPS
+ * by CPU time this raises the frame rate without changing game speed.
+ * Call from an activation callback; 100 restores stock timing.
+ */
+int psx_mod_set_cpu_overclock(uint32_t percent);
 
 /*
  * Enable presentation-only frame interpolation while leaving guest VBlank,
