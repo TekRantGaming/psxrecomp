@@ -2937,6 +2937,20 @@ static int32_t  polyline_prev_x, polyline_prev_y;  /* previous vertex */
 static uint16_t polyline_prev_c;      /* shaded polyline: previous color */
 static int      polyline_semi_trans;  /* semi-transparency flag from command word */
 static int      polyline_has_prev;    /* have we seen at least one vertex? */
+/* Native-wide HUD re-anchor for a polyline: computed from its first vertex
+ * (the same rule ws_nw_hud_shift_vertices applies to a line) and applied to
+ * every vertex, so a tagged HUD outline moves as one rigid shape. */
+static int32_t  polyline_hud_dx;
+static int      polyline_hud_pending;
+static int32_t polyline_hud_shift(int32_t x) {
+    if (polyline_hud_pending) {
+        int32_t vx = x;
+        ws_nw_hud_shift_vertices(&vx, 1);
+        polyline_hud_dx = vx - x;
+        polyline_hud_pending = 0;
+    }
+    return x + polyline_hud_dx;
+}
 
 /* VRAM write transfer state (CPU→VRAM, command 0xA0) */
 static uint16_t vram_write_x, vram_write_y;   /* start coords */
@@ -6648,6 +6662,7 @@ static void gpu_write_gp0_body(uint32_t val) {
         }
         int32_t x, y;
         parse_vertex(val, &x, &y);
+        x = polyline_hud_shift(x);
         x += draw_offset_x; y += draw_offset_y;
         if (polyline_has_prev &&
             !psx_gpu_line_oversize(polyline_prev_x, polyline_prev_y, x, y)) {
@@ -6672,6 +6687,7 @@ static void gpu_write_gp0_body(uint32_t val) {
             /* First vertex */
             int32_t x, y;
             parse_vertex(val, &x, &y);
+            x = polyline_hud_shift(x);
             x += draw_offset_x; y += draw_offset_y;
             polyline_prev_x = x; polyline_prev_y = y;
             polyline_prev_c = polyline_color;
@@ -6693,6 +6709,7 @@ static void gpu_write_gp0_body(uint32_t val) {
         {
             int32_t x, y;
             parse_vertex(val, &x, &y);
+            x = polyline_hud_shift(x);
             x += draw_offset_x; y += draw_offset_y;
             if (!psx_gpu_line_oversize(polyline_prev_x, polyline_prev_y, x, y))
                 gr_draw_shaded_line(polyline_prev_x, polyline_prev_y,
@@ -6736,6 +6753,11 @@ static void gpu_write_gp0_body(uint32_t val) {
         polyline_color = rgb888_to_rgb555(val & 0xFFFFFFu);
         polyline_prev_c = polyline_color;
         polyline_has_prev = 0;
+        /* A polyline is a command like any other: HUD roles and the census
+         * key on its source packet, which was left stale before. */
+        gp0_cmd_source_addr = gp0_next_source_addr;
+        polyline_hud_dx = 0;
+        polyline_hud_pending = 1;
         gr_set_semi_transparency(polyline_semi_trans, (int)semi_transparency);
         gp0_state = shaded ? GP0_POLYLINE_SHADED : GP0_POLYLINE_MONO;
         gp0_draw_count++;
