@@ -137,6 +137,19 @@ static inline int psx_sdl_get_current_display_mode(
     return 0;
 }
 
+/* Window position centred on display `index` (0-based, in SDL's display
+ * order); centred on the primary display when that display does not exist. */
+static inline int psx_sdl_centered_on_display(int index)
+{
+    int count = 0;
+    SDL_DisplayID *ids = SDL_GetDisplays(&count);
+    int pos = SDL_WINDOWPOS_CENTERED;
+    if (ids && index >= 0 && index < count)
+        pos = (int)SDL_WINDOWPOS_CENTERED_DISPLAY(ids[index]);
+    SDL_free(ids);
+    return pos;
+}
+
 /* Opt-in high-pixel-density game window. Without it, SDL3 on a Retina Mac
  * gives the GL context a drawable in POINTS (half the panel resolution) and
  * the compositor stretches it, so any internal resolution above that is
@@ -259,6 +272,13 @@ static inline int psx_sdl_cond_wait_timeout(
 #include <SDL.h>
 
 #define PSX_SDL_WINDOW_HIGH_DENSITY SDL_WINDOW_ALLOW_HIGHDPI
+
+static inline int psx_sdl_centered_on_display(int index)
+{
+    if (index >= 0 && index < SDL_GetNumVideoDisplays())
+        return (int)SDL_WINDOWPOS_CENTERED_DISPLAY(index);
+    return SDL_WINDOWPOS_CENTERED;
+}
 
 static inline int psx_sdl_display_pixel_height(SDL_Window *window)
 {

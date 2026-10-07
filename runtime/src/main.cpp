@@ -1334,6 +1334,11 @@ static int           g_fullscreen     = 0;  /* tri-state: 0 windowed, 1 borderle
 static int           g_video_screen   = 0;  /* 0=raw,1=crt,2=composite,3=trinitron */
 static int           g_video_win_w    = 0;    /* 0 = fit the display; see clamp_window_aspect */
 static bool          g_audio_spu_hq   = false; /* SPU float-shadow (env overrides) */
+/* settings.toml [audio] latency_ms: the output ring's fill target. */
+static int           g_audio_latency_ms = 180;
+/* settings.toml [video] monitor / stretch. */
+static int           g_video_monitor  = -1;   /* -1: the primary display */
+static bool          g_video_stretch  = false;
 static int           g_audio_freq     = 44100; /* host device request */
 static int           g_auto_skip_fmv  = 0;   /* skip FMVs the instant they're detected */
 /* Local rewind is opt-in: the snap ring is whole-machine state on a frame
@@ -1421,6 +1426,11 @@ static bool          g_mod_native_vblank_rate = false;
 static uint32_t      g_mod_native_vblank_fps = 0;
 /* Activation-time request. -1 means no enabled mod owns load acceleration. */
 static int           g_mod_load_wall_multiplier = -1;
+/* Set once the session's mod plugins have activated: a later
+ * psx_mod_set_load_acceleration() call (a plugin arming fast loading only
+ * while a load holds its game up) then takes effect at once. */
+static bool          g_mod_load_live = false;
+static void apply_mod_load_acceleration(void);
 static int           g_mod_load_release_frames = -1;
 static int           g_mod_disc_speed_divisor = -1;
 static int           g_mod_disc_instant_rate = -1;
@@ -1781,6 +1791,7 @@ extern "C" int psx_mod_set_load_acceleration(
     }
     g_mod_load_wall_multiplier = (int)wall_clock_multiplier;
     g_mod_load_release_frames = (int)release_frames;
+    if (g_mod_load_live) apply_mod_load_acceleration();
     return 1;
 }
 
@@ -2400,6 +2411,23 @@ static int g_turbo_audio_sink_config_enabled = 0;
 /* Zero multiplier retains the historical uncapped turbo behavior. */
 static int g_turbo_load_wall_multiplier = 0;
 static int g_turbo_load_release_frames = TURBO_LOADS_RELEASE_FRAMES;
+
+/* A mod's load acceleration into the turbo-loads state. Multiplier 1 is
+ * authentic pacing, so it turns turbo loads OFF: the pacer only throttles a
+ * turbo load at 2 and above, and before this a "1" ran every detected load
+ * unpaced (a game that streams from disc all the time then free-ran). */
+static void apply_mod_load_acceleration(void) {
+    if (g_mod_load_wall_multiplier < 0) return;
+    g_turbo_loads_enabled = g_mod_load_wall_multiplier == 1 ? 0 : 1;
+    g_turbo_load_wall_multiplier = g_mod_load_wall_multiplier;
+    g_turbo_load_release_frames = g_mod_load_release_frames;
+    /* Fast Loading advances the guest at a host rate greater than real time.
+     * Keep the canonical SPU/CD stream running, but discard the accelerated
+     * presentation-side audio until pacing resumes; otherwise the SDL bridge
+     * overflows and the load becomes observably unstable. */
+    g_turbo_audio_sink_enabled = g_turbo_load_wall_multiplier > 1
+        ? 1 : g_turbo_audio_sink_config_enabled;
+}
 static SDL_AudioDeviceID sdl_audio_device;
 static int16_t       sdl_audio_buf[2048 * 2];
 
@@ -4473,6 +4501,8 @@ struct PsxButtonMap {
 static int controller_device_index = 0;
 /* Default ~10% of SDL axis range (32767). Overridden per-player via settings. */
 static int controller_deadzone = 3277;
+/* input.ini [controller] vibration: rumble strength in percent, 0 = off. */
+static int controller_vibration = 100;
 /* [controller] anti_deadzone (game.toml). 0 = off, the historical behaviour. */
 static int controller_anti_deadzone = 0;
 static constexpr int kDefaultDeadzoneRaw = 3277;
@@ -4867,6 +4897,8 @@ static void load_input_config(const char* argv0) {
                 controller_device_index = std::max(0, std::atoi(value.c_str()));
             } else if (key == "deadzone") {
                 controller_deadzone = std::max(0, std::min(32767, std::atoi(value.c_str())));
+            } else if (key == "vibration") {
+                controller_vibration = std::max(0, std::min(100, std::atoi(value.c_str())));
             }
         } else if (section == "mapping") {
             for (auto& entry : controller_map) {
@@ -4991,8 +5023,9 @@ static void update_controller_rumble(void) {
         const bool changed = !p.rumble_known || p.rumble_small != small ||
                              p.rumble_large != large;
         if (small || large || (changed && p.rumble_known)) {
-            const Uint16 low_frequency = (Uint16)((unsigned)large * 257u);
-            const Uint16 high_frequency = small ? 0xFFFFu : 0u;
+            const unsigned strength = (unsigned)controller_vibration;
+            const Uint16 low_frequency = (Uint16)((unsigned)large * 257u * strength / 100u);
+            const Uint16 high_frequency = small ? (Uint16)(0xFFFFu * strength / 100u) : 0u;
 #if defined(PSX_SDL3)
             const int rc = SDL_GameControllerRumble(
                 p.handle, low_frequency, high_frequency,
@@ -14565,6 +14598,10 @@ int main(int argc, char** argv) {
         }
         if (us.has_audio_freq)     g_audio_freq      = us.audio_freq;
         if (us.has_spu_hq)         g_audio_spu_hq    = us.spu_hq;
+        if (us.has_audio_latency_ms) g_audio_latency_ms = us.audio_latency_ms;
+        if (us.has_volume)         host_volume_set(us.volume);
+        if (us.has_monitor)        g_video_monitor   = us.monitor;
+        if (us.has_stretch)        g_video_stretch   = us.stretch;
         if (us.has_rewind)        g_rewind_enabled = us.rewind ? 1 : 0;
         if (us.has_rewind_depth)  g_rewind_depth   = us.rewind_depth;
         if (us.has_rewind_interval) g_rewind_interval = us.rewind_interval;
@@ -16100,17 +16137,12 @@ int main(int argc, char** argv) {
             if (g_mod_controller_mode_override[i] >= 0)
                 player_mode[i] = g_mod_controller_mode_override[i];
         }
+        g_mod_load_live = true;
         if (g_mod_load_wall_multiplier >= 0) {
-            g_turbo_loads_enabled = 1;
-            g_turbo_load_wall_multiplier = g_mod_load_wall_multiplier;
-            g_turbo_load_release_frames = g_mod_load_release_frames;
-            /* Fast Loading advances the guest at a host rate greater than real
-             * time. Keep the canonical SPU/CD stream running, but discard the
-             * accelerated presentation-side audio until pacing resumes;
-             * otherwise the SDL bridge overflows and the load becomes
-             * observably unstable. */
-            g_turbo_audio_sink_enabled = g_turbo_load_wall_multiplier > 1;
-            if (g_turbo_load_wall_multiplier) {
+            apply_mod_load_acceleration();
+            if (g_turbo_load_wall_multiplier == 1) {
+                std::fprintf(stdout, "psxrecomp: mod selected authentic load pacing\n");
+            } else if (g_turbo_load_wall_multiplier) {
                 std::fprintf(stdout,
                     "psxrecomp: mod selected %dx load acceleration "
                     "(%d release frames)\n",
@@ -16705,7 +16737,9 @@ session_reboot:
         want.freq = g_audio_freq;
         want.format = AUDIO_S16SYS;
         want.channels = 2;
-        want.samples = 1024;
+        /* The device period is part of the latency: 512 frames (~12 ms)
+         * when a low fill target was asked for, 1024 otherwise. */
+        want.samples = g_audio_latency_ms < 120 ? 512 : 1024;
         const bool legacy = audio_legacy_mode();
         want.allow_frequency_change = legacy ? 0 : 1;
         if (!legacy)
@@ -16717,6 +16751,11 @@ session_reboot:
                 cfg.channels    = 2;
                 cfg.source_rate = 44100.0;            /* SPU render rate */
                 cfg.host_rate   = (double)have.freq;  /* actual device rate */
+                /* Fill target from settings; the ring and the overflow
+                 * emergency keep the defaults' headroom above it. */
+                cfg.target_ms   = (double)g_audio_latency_ms;
+                cfg.ring_ms     = cfg.target_ms + 100.0;
+                cfg.em_high_ms  = cfg.target_ms + 55.0;
                 if (rab_init(&s_drc, &cfg) == 0) s_drc_ready = true;
             }
             g_audio_host_rate = have.freq;
@@ -16761,7 +16800,8 @@ session_reboot:
     clamp_window_aspect(&game_w, &game_h, g_video_aspect_num, g_video_aspect_den);
     sdl_window = SDL_CreateWindow(
         window_title.c_str(),
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        psx_sdl_centered_on_display(g_video_monitor),
+        psx_sdl_centered_on_display(g_video_monitor),
         game_w, game_h,
         win_flags
     );
@@ -16799,6 +16839,7 @@ session_reboot:
             std::fprintf(stdout, "psxrecomp: internal resolution Match display: "
                          "%d px -> %dx requested\n", dh, s);
         }
+        gl_renderer_set_stretch(g_video_stretch ? 1 : 0);
         gl_renderer_set_swap_interval(present_effective_swap_interval()); /* applied at context init */
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
 

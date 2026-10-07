@@ -4233,7 +4233,12 @@ static void letterbox_rect_aspect(int ww, int wh, int num, int den,
     *y = (wh - dh) / 2;
     *w = dw; *h = dh;
 }
+/* settings.toml [video] stretch: fill the window, ignoring the aspect. */
+static int s_stretch = 0;
+void gl_renderer_set_stretch(int stretch) { s_stretch = stretch ? 1 : 0; }
+
 static void letterbox_rect(int ww, int wh, int *x, int *y, int *w, int *h) {
+    if (s_stretch) { *x = 0; *y = 0; *w = ww; *h = wh; return; }
     letterbox_rect_aspect(ww, wh, s_aspect_num, s_aspect_den, x, y, w, h);
 }
 

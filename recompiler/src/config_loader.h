@@ -1438,6 +1438,16 @@ struct UserSettings {
     // [audio]
     bool has_spu_hq         = false; bool spu_hq         = false;
     bool has_audio_freq     = false; int  audio_freq     = 44100;
+    // [audio] volume: master volume in percent (0..100), the same control as
+    // the in-game numpad +/-. latency_ms: the output ring's steady-state fill
+    // target (40..250 ms; the framework default is 180, which rides out long
+    // streamed-audio pauses; lower values trade that reserve for less delay).
+    bool has_volume         = false; int  volume         = 100;
+    bool has_audio_latency_ms = false; int audio_latency_ms = 180;
+    // [video] monitor: 0-based display the game window opens on.
+    // [video] stretch: fill the window, ignoring the display aspect.
+    bool has_monitor        = false; int  monitor        = 0;
+    bool has_stretch        = false; bool stretch        = false;
     // [bios] / [disc] / [memcard]
     bool has_bios_path      = false; std::filesystem::path bios_path;
     bool has_disc_path      = false; std::filesystem::path disc_path;

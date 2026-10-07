@@ -2694,6 +2694,12 @@ UserSettings load_user_settings(const fs::path& path) {
                 s.aspect_num = n; s.aspect_den = d; s.has_aspect_ratio = true;
             }
         });
+        if (v.contains("monitor")) try_get([&]{
+            s.monitor = std::max(0, toml::find<int>(v, "monitor")); s.has_monitor = true;
+        });
+        if (v.contains("stretch")) try_get([&]{
+            s.stretch = toml::find<bool>(v, "stretch"); s.has_stretch = true;
+        });
         if (v.contains("adaptive_view")) try_get([&]{
             s.adaptive_view = toml::find<bool>(v, "adaptive_view");
             s.has_adaptive_view = true;
@@ -2753,6 +2759,13 @@ UserSettings load_user_settings(const fs::path& path) {
         });
         if (a.contains("spu_hq")) try_get([&]{
             s.spu_hq = toml::find<bool>(a, "spu_hq"); s.has_spu_hq = true;
+        });
+        if (a.contains("volume")) try_get([&]{
+            s.volume = std::clamp(toml::find<int>(a, "volume"), 0, 100); s.has_volume = true;
+        });
+        if (a.contains("latency_ms")) try_get([&]{
+            s.audio_latency_ms = std::clamp(toml::find<int>(a, "latency_ms"), 40, 250);
+            s.has_audio_latency_ms = true;
         });
     }
     if (doc.contains("hotkeys")) {
@@ -3050,6 +3063,10 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "aspect_ratio      = \"" << s.aspect_num << ":" << s.aspect_den << "\"\n";
     if (s.has_adaptive_view)
         f << "adaptive_view     = " << (s.adaptive_view ? "true" : "false") << "\n";
+    if (s.has_monitor)
+        f << "monitor           = " << s.monitor << "\n";
+    if (s.has_stretch)
+        f << "stretch           = " << (s.stretch ? "true" : "false") << "\n";
     if (s.has_rewind)
         f << "rewind            = " << (s.rewind ? "true" : "false") << "\n";
     if (s.has_rewind_depth)
@@ -3069,6 +3086,10 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "frequency = " << s.audio_freq << "\n";
     if (s.has_spu_hq)
         f << "spu_hq = " << (s.spu_hq ? "true" : "false") << "\n";
+    if (s.has_volume)
+        f << "volume = " << s.volume << "\n";
+    if (s.has_audio_latency_ms)
+        f << "latency_ms = " << s.audio_latency_ms << "\n";
     if (s.has_hotkey_pad_rewind || s.has_hotkey_pad_save_state_menu ||
         s.has_hotkey_pad_fast_forward || s.has_hotkey_pad_fast_forward_toggle) {
         f << "\n[hotkeys]\n";
