@@ -2500,6 +2500,11 @@ function(psxrecomp_add_game_runtime target)
     if(EXISTS "${PSXG_VERSION_FILE}")
         file(READ "${PSXG_VERSION_FILE}" _psxg_ver_raw)
         string(STRIP "${_psxg_ver_raw}" _psxg_release_version)
+        # A VERSION bump must reconfigure an existing build tree; otherwise the
+        # stamp and the compiled lobby pin keep the version from the last
+        # configure (a Linux tree configured at 0.1.0 shipped 0.1.0 at 1.0.0).
+        set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" APPEND PROPERTY
+                     CMAKE_CONFIGURE_DEPENDS "${PSXG_VERSION_FILE}")
     else()
         set(_psxg_release_version "0.0.0")
     endif()
