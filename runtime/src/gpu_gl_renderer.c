@@ -78,6 +78,7 @@
 #include "gl_scale_limits.h"
 #include "gpu_sw_renderer.h"
 #include "gpu_gl_renderer.h"
+#include "gpu_gl_upscaler.h"
 #include "mod_texture_banks.h"
 #include "frame_interpolation.h"
 #include "render_pass_plan.h"
@@ -423,6 +424,11 @@ static GLint         s_present_uFxaa = -1, s_present_uSharpen = -1, s_present_uP
 /* Post filters for game content (gl_renderer_set_fxaa / _set_sharpen). */
 static int           s_fxaa_on = 0;
 static float         s_sharpen = 0.0f;
+/* [video] upscaler (gl_renderer_set_upscaler): mode, sharpness, and whether
+ * this context has OpenGL 4.3 for them (gl_upscaler_init). */
+static int           s_upscaler_mode = 0;
+static float         s_upscaler_sharpness = 0.5f;
+static int           s_upscaler_ok = 0;
 /* Host-side presentation state. The shader applies this only to the source
  * image being presented; overlays and already-composed hold-last images set
  * the uniform back to the identity explicitly. */
@@ -4216,6 +4222,14 @@ void gl_renderer_set_fxaa(int on) {
     present_invalidate_latches();
 }
 
+void gl_renderer_set_upscaler(int mode, float sharpness) {
+    if (mode < GL_UPSCALER_OFF || mode > GL_UPSCALER_NIS) mode = GL_UPSCALER_OFF;
+    if (mode == s_upscaler_mode && sharpness == s_upscaler_sharpness) return;
+    s_upscaler_mode = mode;
+    s_upscaler_sharpness = sharpness;
+    present_invalidate_latches();
+}
+
 void gl_renderer_set_sharpen(float amount) {
     if (!isfinite(amount) || amount < 0.f) amount = 0.f;
     if (amount > 1.f) amount = 1.f;
@@ -4740,6 +4754,13 @@ int gl_renderer_init_context(SDL_Window *win) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     s_ctx = SDL_GL_CreateContext(win);
+    if (!s_ctx) {
+        /* No 4.3 core context (the upscalers' version): the renderer itself
+         * needs only 3.3. */
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+        s_ctx = SDL_GL_CreateContext(win);
+    }
     if (!s_ctx) { fprintf(stdout, "psxrecomp: GL context creation failed (%s)\n", SDL_GetError()); return 0; }
     if (SDL_GL_MakeCurrent(win, s_ctx) != 0) { fprintf(stdout, "psxrecomp: MakeCurrent failed (%s)\n", SDL_GetError()); SDL_GL_DeleteContext(s_ctx); s_ctx=NULL; return 0; }
     /* Swap interval: N>0 = vsync every N refreshes (tear-free, default 1), 0 = immediate
@@ -4759,6 +4780,7 @@ int gl_renderer_init_context(SDL_Window *win) {
      * the alternating-present menu jitter). */
     int ok = load_modern_gl();
     if (ok) {
+        s_upscaler_ok = gl_upscaler_init();
         glGenTextures(1, &s_present_tex);
         glBindTexture(GL_TEXTURE_2D, s_present_tex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -6969,6 +6991,72 @@ static void gl_swap_with_osd(void) {
  * output). Only used for S > 1 sources, so native presents never change. */
 #define PRESENT_AREA_MIN_RATIO 1.25f
 
+/* [video] upscaler: game content drawn smaller than its letterbox is rebuilt
+ * at the letterbox size by FSR 1 or NIS (gpu_gl_upscaler.cpp) instead of the
+ * plain scale. The source rect is first drawn 1:1 into the upscaler's staging
+ * image with FXAA and sharpening (the present shader's post filters, at the
+ * source resolution as on the plain path), then the result is drawn 1:1 into
+ * the letterbox with gamma and scanlines. Returns 0 to take the plain path:
+ * upscaler off or unavailable, an already-composed image, a supersampled
+ * source (area resolve), or no upscale to do. */
+static int present_upscaled(GLuint tex, int tex_w, int tex_h, int x, int y,
+                            int w, int h, int lx, int ly, int lw, int lh,
+                            int v_flip, int apply_gamma, int src_scale,
+                            int area) {
+    const int s = src_scale > 1 ? src_scale : 1;
+    const int sw = w * s, sh = h * s;
+    unsigned fbo = 0, staging, out;
+    if (!s_upscaler_mode || !s_upscaler_ok || !v_flip || !apply_gamma || area)
+        return 0;
+    if (sw <= 0 || sh <= 0 || lw <= 0 || lh <= 0 || (sw >= lw && sh >= lh))
+        return 0;
+    staging = gl_upscaler_staging(sw, sh, &fbo);
+    if (!staging) return 0;
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, sw, sh);
+    p_glActiveTexture(PSXGL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    p_glUseProgram(s_present_prog);
+    p_glUniform1i(s_present_uTex, 0);
+    present_set_gamma(s_present_uGamma, 0);
+    present_set_post(1, tex_w * s, tex_h * s);
+    present_set_sharp(0, 0, 0, 0, 0);
+    PRESENT_SCANLINE(0, 0, 0);
+    /* 1:1 with NEAREST: texel-exact, so no half-texel inset. */
+    p_glUniform4f(s_present_uUvRect, (float)x / (float)tex_w, (float)y / (float)tex_h,
+                  (float)(x + w) / (float)tex_w, (float)(y + h) / (float)tex_h);
+    p_glBindVertexArray(s_present_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    out = gl_upscaler_run(s_upscaler_mode, s_upscaler_sharpness, sw, sh, lw, lh);
+    if (!out) {
+        p_glBindVertexArray(0);
+        p_glUseProgram(0);
+        return 0;
+    }
+    /* The staging image and the output keep GL's row order (bottom row
+     * first), so the letterbox samples them unflipped. */
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+    glViewport(lx, ly, lw, lh);
+    p_glActiveTexture(PSXGL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, out);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    p_glUseProgram(s_present_prog);
+    p_glUniform1i(s_present_uTex, 0);
+    present_set_gamma(s_present_uGamma, 1);
+    present_set_post(0, 0, 0);
+    present_set_sharp(0, 0, 0, 0, 0);
+    PRESENT_SCANLINE(h, h, lh);
+    p_glUniform4f(s_present_uUvRect, 0.0f, 1.0f, 1.0f, 0.0f);
+    p_glBindVertexArray(s_present_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    p_glBindVertexArray(0);
+    p_glUseProgram(0);
+    return 1;
+}
+
 /* tex_w/tex_h and x/y/w/h are in the texture's NATIVE units; src_scale is how
  * many texels one native unit spans (the internal scale for the hr FBO and the
  * wide surfaces, 1 for textures that hold native or already-composed pixels).
@@ -6984,6 +7072,9 @@ static void present_target_quad(GLuint tex, int tex_w, int tex_h,
         float ry = (float)(h * src_scale) / (float)lh;
         area = (rx > PRESENT_AREA_MIN_RATIO || ry > PRESENT_AREA_MIN_RATIO);
     }
+    if (present_upscaled(tex, tex_w, tex_h, x, y, w, h, lx, ly, lw, lh, v_flip,
+                         apply_gamma, src_scale, area))
+        return;
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
     glViewport(lx, ly, lw, lh);
     p_glActiveTexture(PSXGL_TEXTURE0);

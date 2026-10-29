@@ -1208,6 +1208,8 @@ static float         g_video_scanline_strength = 0.5f;
 static bool          g_video_fxaa = false;
 static int           g_video_sharpen = 0;        /* 0..100 % */
 static int           g_video_brightness = 100;   /* 50..150 %, as present gamma */
+static int           g_video_upscaler = 0;       /* 0 off, 1 FSR 1, 2 NIS */
+static int           g_video_upscaler_sharpness = 50;  /* 0..100 % */
 static bool          g_fps_counter = false;
 static int           g_gun_crosshair = 1;        /* 0 off, 1 controller, 2 always */
 static int           g_gun_crosshair_style = 0;  /* 0 cross, 1 dot, 2 ring */
@@ -1235,6 +1237,8 @@ static void apply_pc_video_settings(void) {
     gl_renderer_set_fxaa(g_video_fxaa ? 1 : 0);
     gl_renderer_set_sharpen((float)g_video_sharpen / 100.0f);
     gl_renderer_set_post_gamma((float)g_video_brightness / 100.0f);
+    gl_renderer_set_upscaler(g_video_upscaler,
+                             (float)g_video_upscaler_sharpness / 100.0f);
     psx_guncon_set_reticle_style(g_gun_crosshair_style, g_gun_crosshair_size);
     s_fps_telemetry_enabled = g_fps_counter ? 1 : 0;
     s_fps_last_time = 0;
@@ -2044,7 +2048,9 @@ static void update_adaptive_widescreen() {
  * teardown resets them and macOS otherwise supplies a legacy 2.1 context. */
 static void configure_core_gl_context_attributes() {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    /* 4.3 for the upscalers ([video] upscaler); gl_renderer_init_context falls
+     * back to 3.3 where the driver has no 4.3 core context (macOS: 4.1). */
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
@@ -14580,6 +14586,9 @@ int main(int argc, char** argv) {
         if (us.has_fxaa)        g_video_fxaa = us.fxaa;
         if (us.has_sharpen)     g_video_sharpen = us.sharpen;
         if (us.has_brightness)  g_video_brightness = us.brightness;
+        if (us.has_upscaler)    g_video_upscaler = us.upscaler;
+        if (us.has_upscaler_sharpness)
+            g_video_upscaler_sharpness = us.upscaler_sharpness;
         if (us.has_fps_counter) g_fps_counter = us.fps_counter;
         if (us.has_gun_crosshair)       g_gun_crosshair = us.gun_crosshair;
         if (us.has_gun_crosshair_style) g_gun_crosshair_style = us.gun_crosshair_style;

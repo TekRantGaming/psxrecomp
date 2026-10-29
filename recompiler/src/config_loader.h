@@ -1367,6 +1367,11 @@ struct UserSettings {
     bool has_fxaa        = false; bool fxaa        = false;
     bool has_sharpen     = false; int  sharpen     = 0;   // 0..100 %
     bool has_brightness  = false; int  brightness  = 100; // 50..150 %, applied as gamma
+    // Upscaler from the internal resolution to the window (GL presenter, OpenGL
+    // 4.3): 0 off (plain scale), 1 AMD FSR 1 (EASU + RCAS), 2 NVIDIA NIS.
+    // Sharpness 0..100 % for either.
+    bool has_upscaler    = false; int  upscaler    = 0;
+    bool has_upscaler_sharpness = false; int upscaler_sharpness = 50;
     bool has_fps_counter = false; bool fps_counter = false;
     // [gun] light-gun (GunCon) presentation and aiming.
     //   crosshair: 0 off, 1 when aiming with a controller, 2 always (the mouse

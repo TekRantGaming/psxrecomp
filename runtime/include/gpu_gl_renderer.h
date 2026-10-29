@@ -197,6 +197,10 @@ void gl_renderer_set_scanlines(int on, float strength);
 /* FXAA and contrast-adaptive sharpening (0..1) on presented game content. */
 void gl_renderer_set_fxaa(int on);
 void gl_renderer_set_sharpen(float amount);
+/* Upscaler from the internal resolution to the window: 0 off, 1 AMD FSR 1
+ * (EASU + RCAS), 2 NVIDIA Image Scaling; sharpness 0..1. Needs OpenGL 4.3
+ * (gpu_gl_upscaler.cpp); without it the plain scale stays. */
+void gl_renderer_set_upscaler(int mode, float sharpness);
 int  gl_renderer_get_scanlines(float *strength);
 
 /* Presentation-only gamma adjustment. gamma = 1.0 is the identity; values

@@ -2635,6 +2635,16 @@ UserSettings load_user_settings(const fs::path& path) {
         if (v.contains("sharpen")) try_get([&]{
             s.sharpen = std::clamp(toml::find<int>(v, "sharpen"), 0, 100); s.has_sharpen = true;
         });
+        if (v.contains("upscaler")) try_get([&]{
+            const auto m = toml::find<std::string>(v, "upscaler");
+            if      (m == "off") { s.upscaler = 0; s.has_upscaler = true; }
+            else if (m == "fsr") { s.upscaler = 1; s.has_upscaler = true; }
+            else if (m == "nis") { s.upscaler = 2; s.has_upscaler = true; }
+        });
+        if (v.contains("upscaler_sharpness")) try_get([&]{
+            s.upscaler_sharpness = std::clamp(toml::find<int>(v, "upscaler_sharpness"), 0, 100);
+            s.has_upscaler_sharpness = true;
+        });
         if (v.contains("brightness")) try_get([&]{
             s.brightness = std::clamp(toml::find<int>(v, "brightness"), 50, 150); s.has_brightness = true;
         });
@@ -3035,6 +3045,10 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "fxaa              = " << (s.fxaa ? "true" : "false") << "\n";
     if (s.has_sharpen)
         f << "sharpen           = " << s.sharpen << "\n";
+    if (s.has_upscaler)
+        f << "upscaler          = \"" << (s.upscaler == 1 ? "fsr" : s.upscaler == 2 ? "nis" : "off") << "\"\n";
+    if (s.has_upscaler_sharpness)
+        f << "upscaler_sharpness = " << s.upscaler_sharpness << "\n";
     if (s.has_brightness)
         f << "brightness        = " << s.brightness << "\n";
     if (s.has_fps_counter)
