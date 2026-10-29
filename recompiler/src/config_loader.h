@@ -1453,6 +1453,8 @@ struct UserSettings {
     // [video] stretch: fill the window, ignoring the display aspect.
     bool has_monitor        = false; int  monitor        = 0;
     bool has_stretch        = false; bool stretch        = false;
+    // [video] fmv_fill: in a wide window, movies fill its width (zoomed, top and bottom trimmed) instead of 4:3.
+    bool has_fmv_fill       = false; bool fmv_fill       = false;
     // [bios] / [disc] / [memcard]
     bool has_bios_path      = false; std::filesystem::path bios_path;
     bool has_disc_path      = false; std::filesystem::path disc_path;

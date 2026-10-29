@@ -952,6 +952,7 @@ static void hold_capture_drawable(void) {
 static void letterbox_rect_aspect(int ww, int wh, int num, int den,
                                   int *x, int *y, int *w, int *h);
 static void letterbox_rect(int ww, int wh, int *x, int *y, int *w, int *h);
+static void letterbox_rect_43(int ww, int wh, int *x, int *y, int *w, int *h);
 
 /* Size of a display-band capture (temporal-blend history, hold-last) whose
  * source band is sw x sh pixels at the output scale. Normally that size. In
@@ -968,7 +969,7 @@ static void hiw_capture_size(int sw, int sh, int force_4_3, int *cw, int *ch) {
     if (!s_hiw || !s_win) return;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     if (ww < 1 || wh < 1) return;
-    if (force_4_3) letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
+    if (force_4_3) letterbox_rect_43(ww, wh, &lx, &ly, &lw, &lh);
     else letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
     if (lw > 0 && lh > 0 && (int64_t)lw * lh < (int64_t)sw * sh) {
         *cw = lw; *ch = lh;
@@ -4251,6 +4252,23 @@ static void letterbox_rect_aspect(int ww, int wh, int num, int den,
 static int s_stretch = 0;
 void gl_renderer_set_stretch(int stretch) { s_stretch = stretch ? 1 : 0; }
 
+/* settings.toml [video] fmv_fill: a movie frame in a window wider than 4:3
+ * fills its width, centred, the rows above and below the window cut off. */
+static int s_fmv_fill = 0, s_movie_frame = 0;
+void gl_renderer_set_fmv_fill(int fill) { s_fmv_fill = fill ? 1 : 0; }
+void gl_renderer_set_movie_frame(int movie) { s_movie_frame = movie ? 1 : 0; }
+
+/* The rect of a frame pinned to 4:3 (movies, 2D screens). */
+static void letterbox_rect_43(int ww, int wh, int *x, int *y, int *w, int *h) {
+    if (s_fmv_fill && s_movie_frame && (int64_t)ww * 3 > (int64_t)wh * 4) {
+        const int dh = (int)(((int64_t)ww * 3) / 4);
+        *x = 0; *w = ww;
+        *y = (wh - dh) / 2; *h = dh;
+        return;
+    }
+    letterbox_rect_aspect(ww, wh, 4, 3, x, y, w, h);
+}
+
 static void letterbox_rect(int ww, int wh, int *x, int *y, int *w, int *h) {
     if (s_stretch) { *x = 0; *y = 0; *w = ww; *h = wh; return; }
     letterbox_rect_aspect(ww, wh, s_aspect_num, s_aspect_den, x, y, w, h);
@@ -4915,7 +4933,7 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
     glClearColor(0.f,0.f,0.f,1.f); glClear(GL_COLOR_BUFFER_BIT);
     int lx, ly, lw, lh;
     if (force_4_3)
-        letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
+        letterbox_rect_43(ww, wh, &lx, &ly, &lw, &lh);
     else
         letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
     /* Short GP1(07h) bands (MotK FMV is 128 lines) only fill a fraction of
@@ -5930,7 +5948,7 @@ static int interp_present_pair(GLuint a, GLuint b, float t, int blend_mode) {
     int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     int lx, ly, lw, lh;
     if (s_interp_force_4_3)
-        letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
+        letterbox_rect_43(ww, wh, &lx, &ly, &lw, &lh);
     else
         letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
     glDisable(GL_SCISSOR_TEST);
@@ -7228,7 +7246,7 @@ int gl_renderer_present_hold_last(void) {
                             0, 0, s_hold_tw, s_hold_th, 0, lx, ly, lw, lh, 0, 0, 1);
     } else {
         if (s_hold_force_4_3)
-            letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
+            letterbox_rect_43(ww, wh, &lx, &ly, &lw, &lh);
         else
             letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
         present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
@@ -7269,7 +7287,7 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
     int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     int lx, ly, lw, lh;
     if (force_4_3)
-        letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
+        letterbox_rect_43(ww, wh, &lx, &ly, &lw, &lh);
     else
         letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
     /* No short-band adjustment on the 15-bit FBO path: a game's native short

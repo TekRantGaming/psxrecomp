@@ -187,6 +187,10 @@ void gl_renderer_set_display_aspect(int num, int den);
 /* Fill the window with the picture instead of letterboxing it to the
  * display aspect (settings.toml [video] stretch). */
 void gl_renderer_set_stretch(int stretch);
+/* settings.toml [video] fmv_fill: movie frames (gl_renderer_set_movie_frame) fill
+ * a window wider than 4:3, zoomed with the top and bottom trimmed. */
+void gl_renderer_set_fmv_fill(int fill);
+void gl_renderer_set_movie_frame(int movie);
 
 /* Scanline post-process (host display setting). on toggles the effect; strength
  * (0..1) is the depth of the dark gap between PS1 scanlines. Applied at the

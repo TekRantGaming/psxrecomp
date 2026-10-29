@@ -1343,6 +1343,7 @@ static int           g_audio_latency_ms = 180;
 /* settings.toml [video] monitor / stretch. */
 static int           g_video_monitor  = -1;   /* -1: the primary display */
 static bool          g_video_stretch  = false;
+static bool          g_video_fmv_fill = false; /* [video] fmv_fill */
 static int           g_audio_freq     = 44100; /* host device request */
 static int           g_auto_skip_fmv  = 0;   /* skip FMVs the instant they're detected */
 /* Local rewind is opt-in: the snap ring is whole-machine state on a frame
@@ -6977,6 +6978,25 @@ static int hotkey_pad_binding_down(int binding) {
     return 0;
 }
 
+/* --from-launcher: the TRG launcher started the game and waits for it.
+ * Holding Back and Start together on player 1's controller for a second, or
+ * Esc for a second and a half, closes the game so the launcher comes back
+ * (as in its other games, trg-launcher game_side/return_to_launcher.cpp). */
+static int g_from_launcher = 0;
+
+static int return_to_launcher_requested(void) {
+    static uint64_t pad_since = 0, key_since = 0;
+    const uint64_t now = SDL_GetTicks64();
+    SDL_GameController *h = g_players[0].handle;
+    const int pad = h && SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_BACK) &&
+                    SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_START);
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    const int key = keys && keys[SDL_SCANCODE_ESCAPE] && host_hotkey_input_focused();
+    if (!pad) pad_since = 0; else if (!pad_since) pad_since = now;
+    if (!key) key_since = 0; else if (!key_since) key_since = now;
+    return (pad_since && now - pad_since >= 1000) || (key_since && now - key_since >= 1500);
+}
+
 static int savestate_menu_open = 0;
 static int savestate_menu_slot = 0;
 static int savestate_menu_ignore_toggle_release = 0;
@@ -7517,6 +7537,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     }
 
     if (!g_headless) {
+        if (g_from_launcher && !psx_netplay_active() && return_to_launcher_requested()) {
+            std::fprintf(stdout, "[launcher] Back and Start held: back to the launcher\n");
+            psx_crash_trace_set_exit_origin("return_to_launcher");
+            shutdown_runtime();
+            std::exit(0);
+        }
         /* Pump SDL events to prevent window freeze. */
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -8112,9 +8138,14 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * and can starve audio, so present native-4:3/MDEC phases directly.
          * The classification catches the transition frame before the first
          * decode; the activity stamp also covers authentic 4:3 configurations. */
-        if (g_gl_active)
+        if (g_gl_active) {
             gl_renderer_set_interpolation_suspended(
                 fmv_frame || mdec_recently_active(2));
+            /* Only movies may fill a wide window ([video] fmv_fill); the
+             * game's 2D menus and loading screens stay 4:3. */
+            gl_renderer_set_movie_frame(
+                fmv_frame && (di.depth24 || mdec_recently_active(2)));
+        }
         const int local_viewport_slot = netplay_local_viewport_slot();
         const bool local_viewport_crop = local_viewport_slot >= 0;
         bool local_viewport_wide =
@@ -13839,6 +13870,8 @@ int main(int argc, char** argv) {
             force_launcher = true;
         } else if (std::strcmp(argv[i], "--no-launcher") == 0) {
             force_no_launcher = true;
+        } else if (std::strcmp(argv[i], "--from-launcher") == 0) {
+            g_from_launcher = 1;
         } else if (std::strcmp(argv[i], "--headless") == 0) {
             g_headless = 1;
             force_no_launcher = true;
@@ -14622,6 +14655,7 @@ int main(int argc, char** argv) {
         if (us.has_volume)         host_volume_set(us.volume);
         if (us.has_monitor)        g_video_monitor   = us.monitor;
         if (us.has_stretch)        g_video_stretch   = us.stretch;
+        if (us.has_fmv_fill)       g_video_fmv_fill  = us.fmv_fill;
         if (us.has_rewind)        g_rewind_enabled = us.rewind ? 1 : 0;
         if (us.has_rewind_depth)  g_rewind_depth   = us.rewind_depth;
         if (us.has_rewind_interval) g_rewind_interval = us.rewind_interval;
@@ -16860,6 +16894,7 @@ session_reboot:
                          "%d px -> %dx requested\n", dh, s);
         }
         gl_renderer_set_stretch(g_video_stretch ? 1 : 0);
+        gl_renderer_set_fmv_fill(g_video_fmv_fill ? 1 : 0);
         gl_renderer_set_swap_interval(present_effective_swap_interval()); /* applied at context init */
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
 

@@ -2710,6 +2710,9 @@ UserSettings load_user_settings(const fs::path& path) {
         if (v.contains("stretch")) try_get([&]{
             s.stretch = toml::find<bool>(v, "stretch"); s.has_stretch = true;
         });
+        if (v.contains("fmv_fill")) try_get([&]{
+            s.fmv_fill = toml::find<bool>(v, "fmv_fill"); s.has_fmv_fill = true;
+        });
         if (v.contains("adaptive_view")) try_get([&]{
             s.adaptive_view = toml::find<bool>(v, "adaptive_view");
             s.has_adaptive_view = true;
@@ -3081,6 +3084,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "monitor           = " << s.monitor << "\n";
     if (s.has_stretch)
         f << "stretch           = " << (s.stretch ? "true" : "false") << "\n";
+    if (s.has_fmv_fill)
+        f << "fmv_fill          = " << (s.fmv_fill ? "true" : "false") << "\n";
     if (s.has_rewind)
         f << "rewind            = " << (s.rewind ? "true" : "false") << "\n";
     if (s.has_rewind_depth)
