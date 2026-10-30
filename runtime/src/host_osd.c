@@ -1,7 +1,8 @@
 /* host_osd.c — top-left toast messages for host hotkeys / savestate results.
  *
- * Visual OSD is gated on RECOMP_LAUNCHER (recomp-ui bundled). Volume state
- * remains available for headless / launcher-less builds. */
+ * Visual OSD is gated on RECOMP_LAUNCHER (recomp-ui bundled) or, for a title
+ * with its own launcher, PSX_HOST_OSD_VISUAL. Volume state remains available
+ * for headless / launcher-less builds. */
 
 #include "host_osd.h"
 #include "psx_rewind.h"
@@ -11,7 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(RECOMP_LAUNCHER)
+#if defined(RECOMP_LAUNCHER) || defined(PSX_HOST_OSD_VISUAL)
 #define HOST_OSD_VISUAL 1
 #else
 #define HOST_OSD_VISUAL 0

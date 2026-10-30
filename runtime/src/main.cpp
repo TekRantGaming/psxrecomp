@@ -536,6 +536,8 @@ static int post_load_probe_env_on(void) {
 }
 static Uint64   s_fps_last_time = 0;
 static uint64_t s_fps_last_frame = 0;
+static uint64_t s_fps_last_flips = 0;
+extern "C" uint64_t gpu_display_flips(void);
 static std::string s_fps_base_title;
 static int      s_fps_telemetry_enabled = -1; /* -1 = unread env */
 static FramePacer s_frame_pacer = { 0 };
@@ -7436,6 +7438,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         if (!s_fps_last_time) {
             s_fps_last_time = now;
             s_fps_last_frame = s_frame_count;
+            s_fps_last_flips = gpu_display_flips();
             if (sdl_window && s_fps_base_title.empty()) {
                 const char *title = SDL_GetWindowTitle(sdl_window);
                 if (title) s_fps_base_title = title;
@@ -7444,6 +7447,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             const double seconds = (double)(now - s_fps_last_time) / (double)frequency;
             const double fps = (double)(s_frame_count - s_fps_last_frame) / seconds;
             const double speed = fps / guest_video_standard_hz();
+            /* Frames the game showed; a game that never swaps buffers falls back
+             * to the VBlank rate. */
+            const uint64_t flips = gpu_display_flips();
+            const double game_fps = flips != s_fps_last_flips
+                ? (double)(flips - s_fps_last_flips) / seconds : fps;
+            s_fps_last_flips = flips;
             double display_fps = 0.0;
             if (g_frame_interpolation && g_gl_active) {
                 display_fps = g_frame_interpolation_fps > 0
@@ -7455,10 +7464,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 if (display_fps > 0.0) {
                     snprintf(title, sizeof(title),
                              "%s  [Game %.0f fps %.2fx | Display %.0f fps]",
-                             s_fps_base_title.c_str(), fps, speed, display_fps);
+                             s_fps_base_title.c_str(), game_fps, speed, display_fps);
                 } else {
                     snprintf(title, sizeof(title), "%s  [Game %.0f fps %.2fx]",
-                             s_fps_base_title.c_str(), fps, speed);
+                             s_fps_base_title.c_str(), game_fps, speed);
                 }
                 SDL_SetWindowTitle(sdl_window, title);
             }
@@ -7466,11 +7475,9 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 char osd[96];
                 if (display_fps > 0.0) {
                     snprintf(osd, sizeof(osd),
-                             "Game %.0f FPS  %.2fx | Display %.0f FPS",
-                             fps, speed, display_fps);
+                             "%.0f FPS | Display %.0f FPS", game_fps, display_fps);
                 } else {
-                    snprintf(osd, sizeof(osd), "Game %.0f FPS  %.2fx",
-                             fps, speed);
+                    snprintf(osd, sizeof(osd), "%.0f FPS", game_fps);
                 }
                 host_osd_set_status(osd);
             }
